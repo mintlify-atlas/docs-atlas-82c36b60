@@ -1,0 +1,118 @@
+---
+title: "wgpu-hal — Hardware abstraction layer"
+description: "The low-level unsafe graphics abstraction beneath wgpu"
+---
+
+`wgpu-hal` is a thin, unsafe abstraction over the native graphics APIs that wgpu targets: Vulkan, Metal, Direct3D 12, and OpenGL/GLES. It is the layer where GPU commands are actually submitted to the driver.
+
+<Warning>
+`wgpu-hal` is an **unsafe API**. Callers are responsible for satisfying every precondition documented on each method. Incorrect use can cause undefined behavior, driver crashes, or GPU faults. Most applications should use the safe [`wgpu`](https://crates.io/crates/wgpu) API instead.
+</Warning>
+
+## Architecture
+
+```
+wgpu (safe Rust API)
+  └── wgpu-core (WebGPU validation, resource tracking)
+        └── wgpu-hal (unsafe HAL)
+              ├── vulkan::Api  → Vulkan driver
+              ├── metal::Api   → Metal driver
+              ├── dx12::Api    → D3D12 driver
+              └── gles::Api    → OpenGL / WebGL2 driver
+```
+
+`wgpu-core` owns all resource lifetimes, validates WebGPU rules, and tracks GPU state. `wgpu-hal` knows nothing about validation — it passes commands directly to the underlying API with minimal translation overhead.
+
+## Key design decisions
+
+### Static dispatch
+
+The HAL traits are **not object-safe**. You select a concrete backend type at compile time:
+
+```rust
+use wgpu_hal::vulkan::Api;
+// or: use wgpu_hal::metal::Api;
+// or: use wgpu_hal::dx12::Api;
+// or: use wgpu_hal::gles::Api;
+```
+
+All HAL operations are then monomorphized over that type. There is no dynamic dispatch overhead.
+
+### Minimal validation
+
+`wgpu-hal` performs no validation beyond what the underlying driver enforces. Errors are returned only for conditions the caller **cannot anticipate**, such as:
+
+- Running out of device or host memory
+- Device loss
+
+Errors for conditions the caller should have prevented (mapping a non-mappable buffer, submitting a command buffer that was never ended) are not returned — they will produce undefined behavior or a driver crash.
+
+### Explicit resource barriers
+
+`wgpu-hal` does not track resource state automatically. You must insert barriers between incompatible usages using `CommandEncoder::transition_buffers` and `CommandEncoder::transition_textures`. For example:
+
+```rust
+// After writing to a buffer from a compute shader:
+encoder.transition_buffers(core::iter::once(wgpu_hal::BufferBarrier {
+    buffer: &my_buffer,
+    usage: wgpu_hal::BufferUses::STORAGE_READ_WRITE..wgpu_hal::BufferUses::INDEX,
+}));
+```
+
+### Persistent buffer mapping
+
+Buffers can remain mapped on the CPU while the GPU reads or writes them. You must call `flush_mapped_ranges` or `invalidate_mapped_ranges` when the mapping is not coherent (indicated by `wgpu_hal::ExposedAdapter::info`).
+
+### Iterator-based API
+
+Methods that accept collections take `impl Iterator` rather than slices. The HAL implementation is not guaranteed to fully drain the iterator, so iterators should not perform mutations as a side effect.
+
+### Idiomatic Rust parameter passing
+
+Objects are passed by reference and returned by value, unlike `wgpu-core` which refers to resources by integer ID.
+
+## Main traits
+
+| Trait | Responsibility |
+|---|---|
+| `Api` | Marker trait that groups all associated types for a backend |
+| `Instance` | Creates surfaces and enumerates adapters |
+| `Adapter` | Represents a physical GPU; opens a `Device` |
+| `Device` | Allocates resources (buffers, textures, pipelines, bind groups) |
+| `Queue` | Submits command buffers; presents surfaces |
+| `CommandEncoder` | Records rendering and compute commands |
+| `Surface` | Manages the swapchain for a window |
+
+Every backend implements all of these traits. For example, the Vulkan backend exposes `vulkan::Instance`, `vulkan::Adapter`, `vulkan::Device`, and so on — all tied together by the `vulkan::Api` marker.
+
+## Safety requirements
+
+Every `unsafe` method in `wgpu-hal` carries implicit preconditions. The general rules are:
+
+- Resources must not be destroyed while the GPU may still be reading or writing them.
+- Command buffers must be fully recorded (via `end_encoding`) before submission.
+- Pipelines and bind groups must be compatible with the pipeline layout in use.
+- Resource barriers must be inserted whenever the usage of a resource changes in a way the backend cannot infer.
+
+<Warning>
+`wgpu-hal`'s safety requirements are not yet fully documented in the source. If you observe a backend imposing a requirement not covered by the trait documentation, consider filing an issue at the [wgpu repository](https://github.com/gfx-rs/wgpu).
+</Warning>
+
+## When to use `wgpu-hal` directly
+
+`wgpu-hal` is intended for:
+
+- **Embedding wgpu into an existing graphics engine** that already manages Vulkan/Metal/D3D12 objects and needs to interoperate with wgpu resources.
+- **Custom resource management** that bypasses `wgpu-core`'s allocator.
+- **Implementing a new wgpu backend** for a platform or graphics API not yet supported.
+
+For all other use cases, use the `wgpu` crate. The `wgpu::Device::as_hal` and `wgpu::Texture::as_hal` escape hatches let you access the underlying `wgpu-hal` objects from a `wgpu` context without rebuilding your entire rendering stack around the unsafe API.
+
+<CardGroup cols={2}>
+  <Card title="HAL backends" icon="server" href="/api/hal/backends">
+    Vulkan, Metal, D3D12, and OpenGL backend details
+  </Card>
+  <Card title="Naga overview" icon="book" href="/api/naga/overview">
+    The shader translator used inside wgpu-hal
+  </Card>
+</CardGroup>

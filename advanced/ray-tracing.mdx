@@ -1,0 +1,411 @@
+---
+title: "Ray tracing"
+description: "Using wgpu's experimental ray tracing API with BLAS and TLAS"
+---
+
+<Warning>
+  Ray tracing support in wgpu is **experimental** and subject to breaking changes at any time. The API may have significant bugs. Feedback and bug reports are welcome on the [ray-tracing tracking issue](https://github.com/gfx-rs/wgpu/issues/1040).
+</Warning>
+
+wgpu provides an experimental ray tracing API built around **acceleration structures**: spatial data structures that enable efficient ray-scene intersection queries on the GPU. The implementation currently supports **ray queries** (also known as inline ray tracing), where ray intersection tests are performed directly inside compute or fragment shaders without a separate ray tracing pipeline stage.
+
+## Required features
+
+Ray tracing requires enabling `Features::EXPERIMENTAL_RAY_QUERY`. This single feature gates both acceleration structure creation and ray query operations in shaders. Unlike Vulkan, wgpu does not use separate features for acceleration structures and ray queries.
+
+```rust
+let (device, queue) = adapter
+    .request_device(&wgpu::DeviceDescriptor {
+        required_features: wgpu::Features::EXPERIMENTAL_RAY_QUERY,
+        required_limits: wgpu::Limits::default()
+            .using_minimum_supported_acceleration_structure_values(),
+        ..Default::default()
+    })
+    .await
+    .unwrap();
+```
+
+<Note>
+  Call `Limits::using_minimum_supported_acceleration_structure_values()` to ensure the device limits are compatible with acceleration structure operations.
+</Note>
+
+## Acceleration structure overview
+
+Ray tracing in wgpu uses a two-level hierarchy:
+
+- **BLAS** (Bottom-Level Acceleration Structure): contains the actual triangle or AABB geometry.
+- **TLAS** (Top-Level Acceleration Structure): contains instances of BLASes, each with its own transformation matrix.
+
+Shaders query the TLAS to trace rays against all geometry in the scene.
+
+## BLAS: bottom-level acceleration structure
+
+A `Blas` represents a piece of geometry — triangles or axis-aligned bounding boxes (AABBs). You create one by declaring the size of its geometry up front, then building it with the actual vertex/index buffers.
+
+### Creating a BLAS
+
+```rust
+use wgpu::{
+    AccelerationStructureFlags, AccelerationStructureGeometryFlags,
+    AccelerationStructureUpdateMode, BlasGeometrySizeDescriptors,
+    BlasTriangleGeometrySizeDescriptor, CreateBlasDescriptor,
+};
+
+let blas_size_desc = BlasTriangleGeometrySizeDescriptor {
+    vertex_format: wgpu::VertexFormat::Float32x3,
+    vertex_count: vertex_count as u32,
+    index_format: Some(wgpu::IndexFormat::Uint32),
+    index_count: Some(index_count as u32),
+    flags: AccelerationStructureGeometryFlags::OPAQUE,
+};
+
+let blas = device.create_blas(
+    &CreateBlasDescriptor {
+        label: Some("my blas"),
+        flags: AccelerationStructureFlags::PREFER_FAST_TRACE,
+        update_mode: AccelerationStructureUpdateMode::Build,
+    },
+    BlasGeometrySizeDescriptors::Triangles {
+        descriptors: vec![blas_size_desc.clone()],
+    },
+);
+```
+
+The vertex buffer must be created with `BufferUsages::BLAS_INPUT`:
+
+```rust
+let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+    label: Some("blas vertex buffer"),
+    contents: bytemuck::cast_slice(&vertices),
+    usage: wgpu::BufferUsages::BLAS_INPUT,
+});
+
+let index_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+    label: Some("blas index buffer"),
+    contents: bytemuck::cast_slice(&indices),
+    usage: wgpu::BufferUsages::BLAS_INPUT,
+});
+```
+
+### AABB geometry
+
+For procedural geometry, use `BlasGeometrySizeDescriptors::AABBs` and `BlasAabbGeometry`. Each AABB primitive is a pair of `vec3<f32>` (minimum and maximum corners), and the minimum stride is 24 bytes (`AABB_GEOMETRY_MIN_STRIDE`).
+
+```rust
+use wgpu::{BlasAABBGeometrySizeDescriptor, BlasAabbGeometry, AABB_GEOMETRY_MIN_STRIDE};
+
+let aabb_size_desc = BlasAABBGeometrySizeDescriptor {
+    primitive_count: num_aabbs as u32,
+    flags: AccelerationStructureGeometryFlags::empty(),
+};
+
+let blas = device.create_blas(
+    &CreateBlasDescriptor {
+        label: Some("aabb blas"),
+        flags: AccelerationStructureFlags::PREFER_FAST_TRACE,
+        update_mode: AccelerationStructureUpdateMode::Build,
+    },
+    BlasGeometrySizeDescriptors::AABBs {
+        descriptors: vec![aabb_size_desc.clone()],
+    },
+);
+```
+
+## TLAS: top-level acceleration structure
+
+A `Tlas` holds a collection of `TlasInstance`s, each referencing a BLAS and placing it in world space with a 3×4 affine transform matrix.
+
+### Creating a TLAS
+
+```rust
+use wgpu::{CreateTlasDescriptor, TlasInstance};
+
+let mut tlas = device.create_tlas(&CreateTlasDescriptor {
+    label: Some("my tlas"),
+    max_instances: 3,
+    flags: AccelerationStructureFlags::PREFER_FAST_TRACE,
+    update_mode: AccelerationStructureUpdateMode::Build,
+});
+```
+
+### Populating TLAS instances
+
+Index into the `Tlas` directly to set instances. Each `TlasInstance` holds:
+- A reference to a `Blas`
+- A row-major 3×4 affine transform matrix `[f32; 12]`
+- A 24-bit custom data value passed to the shader on hit
+- An 8-bit mask for ray culling (`(ray_cull_mask & instance.mask) != 0` to hit)
+
+```rust
+tlas[0] = Some(TlasInstance::new(
+    &blas,
+    // Row-major 3x4 affine transform (identity here)
+    [
+        1.0, 0.0, 0.0, 0.0,
+        0.0, 1.0, 0.0, 0.0,
+        0.0, 0.0, 1.0, 0.0,
+    ],
+    0,    // custom_data (24 bits max)
+    0xff, // mask
+));
+```
+
+## Building acceleration structures
+
+<Steps>
+  <Step title="Create a command encoder">
+    ```rust
+    let mut encoder = device.create_command_encoder(
+        &wgpu::CommandEncoderDescriptor { label: None }
+    );
+    ```
+  </Step>
+  <Step title="Build BLAS and TLAS together">
+    The BLAS must be built in the same call as (or before) the TLAS that references it.
+
+    ```rust
+    use wgpu::{BlasBuildEntry, BlasGeometries, BlasTriangleGeometry};
+
+    encoder.build_acceleration_structures(
+        // BLAS build entries
+        Some(&BlasBuildEntry {
+            blas: &blas,
+            geometry: BlasGeometries::TriangleGeometries(vec![BlasTriangleGeometry {
+                size: &blas_size_desc,
+                vertex_buffer: &vertex_buffer,
+                first_vertex: 0,
+                vertex_stride: std::mem::size_of::<[f32; 3]>() as wgpu::BufferAddress,
+                index_buffer: Some(&index_buffer),
+                first_index: Some(0),
+                transform_buffer: None,
+                transform_buffer_offset: None,
+            }]),
+        }),
+        // TLAS packages
+        Some(&tlas),
+    );
+    ```
+  </Step>
+  <Step title="Submit the encoder">
+    ```rust
+    queue.submit(Some(encoder.finish()));
+    ```
+  </Step>
+</Steps>
+
+<Note>
+  A BLAS must have been built before any TLAS that references it is used in a shader. Building them in the same `build_acceleration_structures` call satisfies this requirement.
+</Note>
+
+## BLAS compaction
+
+After building, a BLAS can be compacted to reduce its memory footprint. Compaction is a two-step process:
+
+```rust
+// Step 1: signal that compaction should be prepared once the build completes
+blas.prepare_compaction_async(|result| {
+    if result.is_ok() {
+        println!("BLAS ready for compaction");
+    }
+});
+
+// Step 2: later, check readiness and compact
+if blas.ready_for_compaction() {
+    let compacted = queue.compact_blas(&blas);
+    // compacted is now an independent, smaller BLAS
+    tlas_instance.set_blas(&compacted);
+}
+```
+
+A compacted BLAS cannot be rebuilt or compacted again. Rebuilding the original BLAS resets its compaction state.
+
+## Binding a TLAS in a bind group
+
+The TLAS is bound as an `AccelerationStructure` binding resource:
+
+```rust
+let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+    label: None,
+    entries: &[
+        wgpu::BindGroupLayoutEntry {
+            binding: 0,
+            visibility: wgpu::ShaderStages::COMPUTE,
+            ty: wgpu::BindingType::AccelerationStructure { vertex_return: false },
+            count: None,
+        },
+    ],
+});
+
+let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+    label: None,
+    layout: &bind_group_layout,
+    entries: &[
+        wgpu::BindGroupEntry {
+            binding: 0,
+            resource: wgpu::BindingResource::AccelerationStructure(&tlas),
+        },
+    ],
+});
+```
+
+## Ray queries in WGSL
+
+Ray queries are performed inline in WGSL shaders. Add the `enable wgpu_ray_query;` directive at the top of your shader.
+
+### Complete compute shader example
+
+This shader traces rays from a camera and writes color based on barycentric coordinates of the hit triangle:
+
+```wgsl
+enable wgpu_ray_query;
+
+struct Uniforms {
+    view_inv: mat4x4<f32>,
+    proj_inv: mat4x4<f32>,
+}
+
+@group(0) @binding(0)
+var<uniform> uniforms: Uniforms;
+
+@group(0) @binding(1)
+var output: texture_storage_2d<rgba8unorm, write>;
+
+@group(0) @binding(2)
+var acc_struct: acceleration_structure;
+
+@compute @workgroup_size(8, 8)
+fn main(@builtin(global_invocation_id) global_id: vec3<u32>) {
+    let target_size = textureDimensions(output);
+
+    let pixel_center = vec2<f32>(global_id.xy) + vec2<f32>(0.5);
+    let in_uv = pixel_center / vec2<f32>(target_size.xy);
+    let d = in_uv * 2.0 - 1.0;
+
+    let origin = (uniforms.view_inv * vec4<f32>(0.0, 0.0, 0.0, 1.0)).xyz;
+    let temp = uniforms.proj_inv * vec4<f32>(d.x, d.y, 1.0, 1.0);
+    let direction = (uniforms.view_inv * vec4<f32>(normalize(temp.xyz), 0.0)).xyz;
+
+    var rq: ray_query;
+    rayQueryInitialize(&rq, acc_struct, RayDesc(0u, 0xFFu, 0.1, 200.0, origin, direction));
+    rayQueryProceed(&rq);
+
+    var color = vec4<f32>(0.0, 0.0, 0.0, 1.0);
+    let intersection = rayQueryGetCommittedIntersection(&rq);
+    if intersection.kind != RAY_QUERY_INTERSECTION_NONE {
+        color = vec4<f32>(
+            intersection.barycentrics,
+            1.0 - intersection.barycentrics.x - intersection.barycentrics.y,
+            1.0,
+        );
+    }
+
+    textureStore(output, global_id.xy, color);
+}
+```
+
+### Ray query API reference
+
+```wgsl
+// Initialize a ray query
+rayQueryInitialize(rq: ptr<function, ray_query>, accel: acceleration_structure, ray: RayDesc)
+
+// Advance the traversal. Returns true if a non-opaque (candidate) hit is found.
+// Returns false when traversal completes (committed hit available, or no hit).
+rayQueryProceed(rq: ptr<function, ray_query>) -> bool
+
+// Commit a candidate triangle intersection
+rayQueryConfirmIntersection(rq: ptr<function, ray_query>)
+
+// Generate a hit from procedural AABB geometry
+rayQueryGenerateIntersection(rq: ptr<function, ray_query>, hit_t: f32)
+
+// Abort traversal early
+rayQueryTerminate(rq: ptr<function, ray_query>)
+
+// Get the committed (closest opaque) hit
+rayQueryGetCommittedIntersection(rq: ptr<function, ray_query>) -> RayIntersection
+
+// Get the current candidate (non-opaque) hit
+rayQueryGetCandidateIntersection(rq: ptr<function, ray_query>) -> RayIntersection
+```
+
+### RayDesc and RayIntersection types
+
+```wgsl
+struct RayDesc {
+    flags: u32,         // Ray flags (see constants below)
+    cull_mask: u32,     // ANDed with instance mask; 0 result = skip instance
+    t_min: f32,         // Minimum intersection distance
+    t_max: f32,         // Maximum intersection distance
+    origin: vec3<f32>,  // Ray origin
+    dir: vec3<f32>,     // Ray direction (t is in units of dir length)
+}
+
+struct RayIntersection {
+    kind: u32,                // RAY_QUERY_INTERSECTION_*
+    t: f32,                   // Distance along the ray
+    instance_custom_data: u32,
+    instance_index: u32,
+    sbt_record_offset: u32,
+    geometry_index: u32,
+    primitive_index: u32,
+    barycentrics: vec2<f32>,
+    front_face: bool,
+    object_to_world: mat4x3<f32>,
+    world_to_object: mat4x3<f32>,
+}
+
+// intersection kind constants
+const RAY_QUERY_INTERSECTION_NONE      = 0u;
+const RAY_QUERY_INTERSECTION_TRIANGLE  = 1u;
+const RAY_QUERY_INTERSECTION_GENERATED = 2u;
+const RAY_QUERY_INTERSECTION_AABB      = 3u;
+
+// ray flag constants
+const FORCE_OPAQUE          = 0x1u;
+const FORCE_NO_OPAQUE       = 0x2u;
+const TERMINATE_ON_FIRST_HIT = 0x4u;
+const CULL_BACK_FACING      = 0x10u;
+const CULL_FRONT_FACING     = 0x20u;
+const CULL_OPAQUE           = 0x40u;
+const CULL_NO_OPAQUE        = 0x80u;
+const SKIP_TRIANGLES        = 0x100u;
+const SKIP_AABBS            = 0x200u;
+```
+
+### Vertex position fetch
+
+To retrieve hit triangle vertices, enable the `wgpu_ray_query_vertex_return` extension and use tagged types:
+
+```wgsl
+enable wgpu_ray_query_vertex_return;
+
+var acc_struct: acceleration_structure<vertex_return>;
+var rq: ray_query<vertex_return>;
+
+// After rayQueryProceed returns false (committed hit):
+let verts: array<vec3<f32>, 3> = getCommittedHitVertexPositions(&rq);
+```
+
+## Platform support
+
+<Tabs>
+  <Tab title="Vulkan">
+    Best-supported backend. Requires the `VK_KHR_acceleration_structure` and `VK_KHR_ray_query` Vulkan extensions. Available on most discrete GPUs from NVIDIA, AMD, and Intel (DG2+).
+  </Tab>
+  <Tab title="DX12">
+    Supported via DirectX Raytracing (DXR). Requires a GPU and driver with DXR tier 1.1 support. Use the D3D12 Agility SDK for the broadest hardware coverage.
+  </Tab>
+  <Tab title="Metal">
+    Acceleration structure support was added in wgpu v29. Requires Apple Silicon or AMD GPUs on macOS.
+  </Tab>
+</Tabs>
+
+<CardGroup cols={2}>
+  <Card title="WGSL shaders" href="/advanced/wgsl-shaders">
+    Learn WGSL shader language fundamentals and Naga translation
+  </Card>
+  <Card title="Performance" href="/advanced/performance">
+    Tips for maximizing GPU performance including compute workgroups
+  </Card>
+</CardGroup>

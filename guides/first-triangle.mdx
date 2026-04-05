@@ -1,0 +1,190 @@
+---
+title: "Render your first triangle"
+description: "Draw a triangle using a render pipeline and WGSL shaders"
+---
+
+This guide walks you through rendering a red triangle to a window using wgpu, winit, and WGSL. No vertex buffers are needed — positions are computed in the shader from the built-in `vertex_index`.
+
+## Project setup
+
+Add dependencies to `Cargo.toml`:
+
+```toml
+[dependencies]
+wgpu = "29"
+winit = "0.30"
+pollster = "0.4"
+env_logger = "0.11"
+```
+
+## The WGSL shader
+
+Save this as `src/shader.wgsl`. The vertex shader derives clip-space positions from `vertex_index`; the fragment shader returns solid red.
+
+```wgsl
+@vertex
+fn vs_main(@builtin(vertex_index) in_vertex_index: u32) -> @builtin(position) vec4<f32> {
+    let x = f32(i32(in_vertex_index) - 1);
+    let y = f32(i32(in_vertex_index & 1u) * 2 - 1);
+    return vec4<f32>(x, y, 0.0, 1.0);
+}
+
+@fragment
+fn fs_main() -> @location(0) vec4<f32> {
+    return vec4<f32>(1.0, 0.0, 0.0, 1.0);
+}
+```
+
+The math places vertices at `(-1, -1)`, `(0, 1)`, and `(1, -1)` in clip space.
+
+## Steps
+
+<Steps>
+  <Step title="Create a window with winit">
+    ```rust
+    env_logger::init();
+    let event_loop = winit::event_loop::EventLoop::new().unwrap();
+    let window = winit::window::WindowBuilder::new()
+        .with_title("wgpu triangle")
+        .build(&event_loop)
+        .unwrap();
+    ```
+  </Step>
+
+  <Step title="Initialize wgpu and create a Surface">
+    ```rust
+    let instance = wgpu::Instance::default();
+    let surface = instance.create_surface(&window).unwrap();
+
+    let adapter = pollster::block_on(instance.request_adapter(
+        &wgpu::RequestAdapterOptions {
+            compatible_surface: Some(&surface),
+            ..Default::default()
+        },
+    ))
+    .expect("no adapter found");
+
+    let (device, queue) = pollster::block_on(
+        adapter.request_device(&wgpu::DeviceDescriptor::default())
+    )
+    .unwrap();
+    ```
+
+    Passing `compatible_surface` to `request_adapter` ensures the chosen adapter can present to your window.
+  </Step>
+
+  <Step title="Configure the surface">
+    ```rust
+    let size = window.inner_size();
+    let surface_caps = surface.get_capabilities(&adapter);
+    let format = surface_caps.formats[0];
+
+    surface.configure(&device, &wgpu::SurfaceConfiguration {
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+        format,
+        width: size.width,
+        height: size.height,
+        present_mode: wgpu::PresentMode::Fifo,
+        alpha_mode: surface_caps.alpha_modes[0],
+        view_formats: vec![],
+        desired_maximum_frame_latency: 2,
+    });
+    ```
+
+    Always clamp `width` and `height` to at least 1 — a zero-size surface is a validation error.
+  </Step>
+
+  <Step title="Create the ShaderModule and RenderPipeline">
+    ```rust
+    let shader = device.create_shader_module(wgpu::include_wgsl!("shader.wgsl"));
+
+    let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+        label: Some("triangle-pipeline"),
+        layout: None,
+        vertex: wgpu::VertexState {
+            module: &shader,
+            entry_point: Some("vs_main"),
+            buffers: &[],
+            compilation_options: Default::default(),
+        },
+        fragment: Some(wgpu::FragmentState {
+            module: &shader,
+            entry_point: Some("fs_main"),
+            targets: &[Some(format.into())],
+            compilation_options: Default::default(),
+        }),
+        primitive: wgpu::PrimitiveState::default(),
+        depth_stencil: None,
+        multisample: wgpu::MultisampleState::default(),
+        multiview: None,
+        cache: None,
+    });
+    ```
+
+    `buffers: &[]` — no vertex buffer needed, positions come from the shader. `layout: None` lets wgpu derive the pipeline layout automatically.
+  </Step>
+
+  <Step title="Render loop: acquire, draw, present">
+    Inside your winit event loop, handle `RedrawRequested`:
+
+    ```rust
+    let frame = surface.get_current_texture().unwrap();
+    let view = frame.texture.create_view(&Default::default());
+
+    let mut encoder = device.create_command_encoder(
+        &wgpu::CommandEncoderDescriptor { label: Some("encoder") }
+    );
+
+    {
+        let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+            label: Some("render-pass"),
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &view,
+                resolve_target: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: None,
+            ..Default::default()
+        });
+
+        rpass.set_pipeline(&pipeline);
+        rpass.draw(0..3, 0..1);
+    }
+
+    queue.submit([encoder.finish()]);
+    frame.present();
+    ```
+
+    The sequence every frame: `get_current_texture` → `create_view` → `begin_render_pass` → `set_pipeline` → `draw(0..3, 0..1)` → `submit` → `present`.
+  </Step>
+</Steps>
+
+## Run it
+
+```bash
+RUST_LOG=wgpu=warn cargo run
+```
+
+<Tip>
+  Use `WGPU_BACKEND=vulkan` (or `metal`, `dx12`, `gl`) to force a specific backend without recompiling. See [Platform support](/guides/platform-support) for per-backend notes.
+</Tip>
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Compute shaders" href="/guides/compute-shaders">
+    Run data-parallel GPU computations without a render pipeline
+  </Card>
+  <Card title="WebAssembly & web" href="/guides/wasm-web">
+    Compile your app to WASM and run it in a browser
+  </Card>
+  <Card title="Debugging" href="/guides/debugging">
+    Labels, validation layers, RenderDoc, and API tracing
+  </Card>
+  <Card title="Platform support" href="/guides/platform-support">
+    Backend notes for Vulkan, Metal, D3D12, OpenGL, and WebGPU
+  </Card>
+</CardGroup>

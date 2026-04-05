@@ -1,0 +1,166 @@
+---
+title: "Debugging"
+description: "Tools and techniques for debugging wgpu applications"
+---
+
+wgpu validates every API call through wgpu-core. This guide covers the tools available to surface, inspect, and fix errors.
+
+## Labels
+
+Set `label: Some("descriptive-name")` on every descriptor. Labels appear in validation error messages and GPU debugger captures.
+
+```rust
+let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+    label: Some("vertex-buffer"),
+    size: 1024,
+    usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+    mapped_at_creation: false,
+});
+```
+
+Without a label: `Resource Buffer(Id(0,1,vk)) is still mapped`
+
+With a label: `Resource "vertex-buffer" is still mapped`
+
+## Logging
+
+wgpu uses the `log` crate. Initialize `env_logger` before doing anything else:
+
+```rust
+fn main() {
+    env_logger::init();
+    // ...
+}
+```
+
+Control verbosity with `RUST_LOG`:
+
+| Value | Output |
+|-------|--------|
+| `RUST_LOG=wgpu=error` | Fatal errors only |
+| `RUST_LOG=wgpu=warn` | Warnings and errors (recommended default) |
+| `RUST_LOG=wgpu=info` | Adapter selection, surface negotiation |
+| `RUST_LOG=wgpu=debug` | Verbose internal state |
+| `RUST_LOG=wgpu_hal=debug` | HAL-level calls and Vulkan layer output |
+
+## Validation errors
+
+wgpu-core validates all API calls. By default, errors are delivered via `on_uncaptured_error`:
+
+```rust
+device.on_uncaptured_error(Box::new(|e, _| eprintln!("{e}")));
+```
+
+For tighter control, use error scopes:
+
+```rust
+device.push_error_scope(wgpu::ErrorFilter::Validation);
+
+// ... operations that might fail ...
+
+let error = pollster::block_on(device.pop_error_scope());
+if let Some(e) = error {
+    eprintln!("Validation error: {e:?}");
+}
+```
+
+<Note>
+  Error scopes are the only way to capture errors on WebGPU. The `on_uncaptured_error` callback is not available in browsers.
+</Note>
+
+## Backend and adapter selection
+
+```bash
+# Force a specific backend
+WGPU_BACKEND=vulkan        # or: metal, dx12, gl
+
+# Select an adapter by name substring (case-insensitive)
+WGPU_ADAPTER_NAME=nvidia
+WGPU_ADAPTER_NAME=1080ti
+```
+
+Set these before launching your application. Use `wgpu-info` to see adapter names on your system.
+
+## wgpu-info
+
+Install the `wgpu-info` binary to list all adapters and their capabilities:
+
+```bash
+cargo install wgpu-info
+wgpu-info
+```
+
+Example output:
+
+```
+Adapter: NVIDIA GeForce RTX 4070 (Vulkan)
+  Device type: DiscreteGpu
+  Backend: Vulkan
+  Limits: max_texture_dimension_2d=32768, ...
+  Features: TEXTURE_COMPRESSION_BC, TIMESTAMP_QUERY, ...
+```
+
+## RenderDoc
+
+[RenderDoc](https://renderdoc.org) works with the Vulkan, D3D12, and OpenGL backends.
+
+<Steps>
+  <Step title="Install RenderDoc">
+    Download from [renderdoc.org](https://renderdoc.org). On Linux, also available via your package manager.
+  </Step>
+  <Step title="Launch your app through RenderDoc">
+    Open RenderDoc, set the executable path to your binary, and click **Launch**. RenderDoc must inject at startup — do not run the app directly.
+  </Step>
+  <Step title="Capture a frame">
+    Press `F12` while the app is running to record all GPU commands for that frame.
+  </Step>
+  <Step title="Inspect the capture">
+    Browse draw calls, inspect resource bindings, view shader source, and examine buffer and texture contents at each pipeline stage.
+  </Step>
+</Steps>
+
+<Warning>
+  RenderDoc does not support the Metal backend. On macOS, use Xcode's GPU Frame Capture, or enable Vulkan via MoltenVK and use RenderDoc with `WGPU_BACKEND=vulkan`.
+</Warning>
+
+## Vulkan validation layers
+
+The Vulkan SDK validation layers report API misuse that wgpu-core does not catch:
+
+1. Install the [Vulkan SDK](https://vulkan.lunarg.com/sdk/home).
+2. Set `RUST_LOG=wgpu_hal=debug` to forward layer messages through `env_logger`.
+3. Run your app — layer messages appear alongside wgpu's output in stderr.
+
+Validation layers add significant CPU overhead. Use them during development, not in production.
+
+## API tracing
+
+The `trace` Cargo feature records all wgpu API calls to a file that can be replayed for bug reproduction:
+
+```toml
+[dependencies]
+wgpu = { version = "29", features = ["trace"] }
+```
+
+Pass a trace path when requesting a device:
+
+```rust
+let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+    trace: wgpu::Trace::Path(std::path::Path::new("./wgpu-trace")),
+    ..Default::default()
+}))
+.unwrap();
+```
+
+The trace directory contains a JSON log of all API calls and their resources. Share it when filing a bug report.
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Platform support" href="/guides/platform-support">
+    Backend-specific notes and feature availability
+  </Card>
+  <Card title="Compute shaders" href="/guides/compute-shaders">
+    Common source of validation errors when learning compute pipelines
+  </Card>
+</CardGroup>

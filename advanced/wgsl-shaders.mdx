@@ -1,0 +1,158 @@
+---
+title: "WGSL shaders"
+description: "Writing and using WGSL shaders with wgpu and Naga"
+---
+
+WGSL (WebGPU Shading Language) is the native shader language for wgpu. It is translated by [Naga](/api/naga/overview) to the backend-specific language (HLSL, MSL, GLSL, SPIR-V) at runtime.
+
+## Loading a WGSL shader
+
+```rust
+// Using the include_wgsl! macro (recommended)
+let shader = device.create_shader_module(wgpu::include_wgsl!("shader.wgsl"));
+
+// Or inline:
+let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+    label: Some("shader"),
+    source: wgpu::ShaderSource::Wgsl(include_str!("shader.wgsl").into()),
+});
+```
+
+## Vertex shader
+
+```wgsl
+struct VertexOutput {
+    @builtin(position) clip_position: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+}
+
+@vertex
+fn vs_main(
+    @location(0) position: vec3<f32>,
+    @location(1) uv: vec2<f32>,
+) -> VertexOutput {
+    var out: VertexOutput;
+    out.clip_position = vec4<f32>(position, 1.0);
+    out.uv = uv;
+    return out;
+}
+```
+
+## Fragment shader
+
+```wgsl
+@group(0) @binding(0) var t_diffuse: texture_2d<f32>;
+@group(0) @binding(1) var s_diffuse: sampler;
+
+@fragment
+fn fs_main(in: VertexOutput) -> @location(0) vec4<f32> {
+    return textureSample(t_diffuse, s_diffuse, in.uv);
+}
+```
+
+## Compute shader
+
+```wgsl
+@group(0) @binding(0) var<storage, read>       input:  array<f32>;
+@group(0) @binding(1) var<storage, read_write> output: array<f32>;
+
+@compute @workgroup_size(64)
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) {
+    let i = gid.x;
+    if i >= arrayLength(&input) { return; }
+    output[i] = input[i] * 2.0;
+}
+```
+
+## WGSL type system
+
+| Category | Examples |
+|----------|---------|
+| Scalars | `f32`, `i32`, `u32`, `bool`, `f16` |
+| Vectors | `vec2<f32>`, `vec3f`, `vec4<u32>` |
+| Matrices | `mat2x2<f32>`, `mat4x4f` |
+| Arrays | `array<f32, 4>`, `array<f32>` (runtime-sized) |
+| Structs | `struct Foo { x: f32, y: f32 }` |
+
+Shorthand type aliases: `vec2f` = `vec2<f32>`, `vec3i` = `vec3<i32>`, `mat4x4f` = `mat4x4<f32>`.
+
+## Address spaces
+
+| Address space | WGSL | Accessible from |
+|---------------|------|-----------------|
+| `uniform` | `var<uniform>` | All stages, read-only |
+| `storage` | `var<storage, read>` or `read_write` | All stages |
+| `workgroup` | `var<workgroup>` | Compute only, shared within workgroup |
+| `private` | `var<private>` | Single shader invocation |
+| `function` | `var` (default in fn) | Current function |
+
+## Workgroup model
+
+```wgsl
+var<workgroup> shared_data: array<f32, 64>;
+
+@compute @workgroup_size(64, 1, 1)
+fn main(
+    @builtin(local_invocation_id)  lid: vec3<u32>,
+    @builtin(global_invocation_id) gid: vec3<u32>,
+) {
+    shared_data[lid.x] = f32(gid.x);
+    workgroupBarrier();           // sync all threads in workgroup
+    // now all 64 elements of shared_data are populated
+}
+```
+
+## WGSL language extensions
+
+Some WGSL extensions beyond the core spec are available as opt-in features. Query them on the `Instance`:
+
+```rust
+let extensions = instance.get_wgsl_language_features();
+```
+
+| Extension | `WgslLanguageFeatures` flag |
+|-----------|-----------------------------|
+| Read/write storage textures | `ReadOnlyAndReadWriteStorageTextures` |
+| Packed 4×8 integer dot product | `Packed4x8IntegerDotProduct` |
+| Unrestricted pointer parameters | `UnrestrictedPointerParameters` |
+| Pointer composite access | `PointerCompositeAccess` |
+
+## Alternative shader inputs
+
+<Tabs>
+  <Tab title="SPIR-V">
+    Requires the `spirv` Cargo feature:
+
+    ```rust
+    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("spirv"),
+        source: wgpu::ShaderSource::SpirV(
+            bytemuck::cast_slice(spirv_bytes).into()
+        ),
+    });
+    ```
+  </Tab>
+  <Tab title="GLSL">
+    Requires the `glsl` Cargo feature:
+
+    ```rust
+    let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+        label: Some("glsl"),
+        source: wgpu::ShaderSource::Glsl {
+            shader: include_str!("shader.vert").into(),
+            stage: naga::ShaderStage::Vertex,
+            defines: Default::default(),
+        },
+    });
+    ```
+  </Tab>
+</Tabs>
+
+<CardGroup cols={2}>
+  <Card title="Naga overview" icon="language" href="/api/naga/overview">
+    How Naga translates shaders between languages.
+  </Card>
+  <Card title="Pipelines" icon="microchip" href="/api/pipelines">
+    Use shader modules in render and compute pipelines.
+  </Card>
+</CardGroup>

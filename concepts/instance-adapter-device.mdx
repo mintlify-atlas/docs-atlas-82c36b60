@@ -1,0 +1,123 @@
+---
+title: "Instance, Adapter & Device"
+description: "The three core objects that connect your Rust code to the GPU"
+---
+
+Every wgpu program starts by creating three objects in sequence: `Instance`, `Adapter`, and `Device` (with its paired `Queue`). Each one narrows the connection from "all backends on this machine" down to a single logical GPU you can issue work to.
+
+## Instance
+
+`Instance` is the entry point. It discovers backends and is used to create `Adapter`s and `Surface`s.
+
+```rust
+let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+    backends: wgpu::Backends::all(),
+    ..wgpu::InstanceDescriptor::new_without_display_handle()
+});
+```
+
+`Instance::default()` is equivalent and enables all backends with FXC as the DX12 shader compiler. It panics if no backend feature is enabled for the current compile target.
+
+`InstanceDescriptor` key fields:
+
+| Field | Purpose |
+|---|---|
+| `backends` | Which graphics APIs to consider: `Backends::VULKAN`, `METAL`, `DX12`, `GL`, `BROWSER_WEBGPU`, or `all()` |
+| `backend_options` | Per-backend tuning (e.g. DX12 shader compiler choice) |
+
+`Instance` is `Clone` and does not need to be kept alive once you have the `Adapter` and `Surface` you need.
+
+## Adapter
+
+An `Adapter` is a handle to one physical GPU (or a software fallback). `request_adapter` is async because enumeration may involve system calls:
+
+```rust
+let adapter = instance
+    .request_adapter(&wgpu::RequestAdapterOptions {
+        power_preference: wgpu::PowerPreference::HighPerformance,
+        compatible_surface: Some(&surface),
+        force_fallback_adapter: false,
+    })
+    .await
+    .expect("no suitable adapter found");
+```
+
+`RequestAdapterOptions` fields:
+
+| Field | Purpose |
+|---|---|
+| `power_preference` | `Default`, `LowPower`, or `HighPerformance` |
+| `compatible_surface` | Require the adapter to be able to present to this surface |
+| `force_fallback_adapter` | Prefer a software (CPU) renderer |
+
+Once you have an adapter you can inspect what it supports before opening a device:
+
+```rust
+let info     = adapter.get_info();    // AdapterInfo: name, vendor, backend, device_type
+let features = adapter.features();   // Features bitflags the hardware supports
+let limits   = adapter.limits();     // Limits: max buffer size, texture dimensions, …
+```
+
+## Device and Queue
+
+`adapter.request_device` opens a logical connection and returns a `(Device, Queue)` pair.
+The `DeviceDescriptor` selects which optional features and which resource limits to activate:
+
+```rust
+let (device, queue) = adapter
+    .request_device(&wgpu::DeviceDescriptor {
+        label: Some("main device"),
+        required_features: wgpu::Features::empty(),
+        required_limits: wgpu::Limits::default(),
+        memory_hints: wgpu::MemoryHints::default(),
+    })
+    .await
+    .expect("failed to create device");
+```
+
+`required_features` must be a subset of `adapter.features()`. `required_limits` must not exceed `adapter.limits()`. Requesting more than the adapter supports will panic.
+
+## Full initialization sequence
+
+```rust
+use wgpu::*;
+
+async fn init<W>(window: W) -> (Surface<'static>, Device, Queue)
+where
+    W: Into<SurfaceTarget<'static>>,
+{
+    let instance = Instance::new(InstanceDescriptor {
+        backends: Backends::all(),
+        ..InstanceDescriptor::new_without_display_handle()
+    });
+
+    let surface = instance.create_surface(window).expect("failed to create surface");
+
+    let adapter = instance
+        .request_adapter(&RequestAdapterOptions {
+            power_preference: PowerPreference::HighPerformance,
+            compatible_surface: Some(&surface),
+            force_fallback_adapter: false,
+        })
+        .await
+        .expect("no suitable adapter found");
+
+    let (device, queue) = adapter
+        .request_device(&DeviceDescriptor {
+            label: Some("main device"),
+            required_features: Features::empty(),
+            required_limits: Limits::default(),
+            memory_hints: MemoryHints::default(),
+        })
+        .await
+        .expect("failed to create device");
+
+    (surface, device, queue)
+}
+```
+
+## Reference counting and lifetimes
+
+All wgpu handles (`Instance`, `Adapter`, `Device`, `Queue`, `Buffer`, `Texture`, …) implement `Clone` and are backed by internal reference counts. Cloning is cheap and shares the same underlying GPU object. The GPU resource is released when every clone is dropped.
+
+`Device` does not hold a strong reference to `Adapter` or `Instance`; those can be dropped once you have the device. Per the WebGPU specification, each `Adapter` should only be used once to create a device — request a new adapter if you need a second device.

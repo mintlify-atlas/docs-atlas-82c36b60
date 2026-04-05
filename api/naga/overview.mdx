@@ -1,0 +1,137 @@
+---
+title: "Naga — Shader translator"
+description: "The shader translation library at the heart of wgpu's cross-platform shader support"
+---
+
+Naga is the shader translation library used by wgpu. It reads shader programs written in WGSL, GLSL, or SPIR-V, converts them to an internal representation, and then generates output in the target backend's shading language — GLSL, HLSL, MSL, SPIR-V, or WGSL.
+
+## Role in wgpu
+
+When you call `device.create_shader_module(...)`, wgpu passes your shader source to Naga. Naga parses and validates it, then translates it to whatever language the active backend requires:
+
+| wgpu backend | Naga output |
+|---|---|
+| Vulkan | SPIR-V |
+| Metal | MSL (Metal Shading Language) |
+| D3D12 | HLSL |
+| OpenGL / WebGL2 | GLSL |
+
+Most wgpu users never interact with Naga directly. It operates transparently inside `wgpu-core`.
+
+## Naga IR
+
+All shaders are first parsed into **Naga IR** — a strongly-typed, backend-agnostic intermediate representation. The IR captures:
+
+- **Modules**: the top-level container for types, constants, global variables, and functions.
+- **Functions**: with their expressions, local variables, and control-flow statements.
+- **Expressions**: represented as an `Arena<Expression>`, where each expression is a handle into the arena rather than a tree node.
+- **Types**: stored in a `UniqueArena<Type>` to deduplicate identical types.
+
+This design means front-ends and back-ends are fully decoupled. Any front-end can produce IR that any back-end can consume.
+
+## Front-end / back-end architecture
+
+```
+WGSL source ──┐
+SPIR-V binary─┼──► [front-end] ──► Naga IR ──► [back-end] ──► SPIR-V / MSL / HLSL / GLSL / WGSL
+GLSL source ──┘
+```
+
+See [Frontends](/api/naga/frontends) and [Backends](/api/naga/backends) for details on each.
+
+## Validation
+
+Naga validates shaders against the [WGSL specification](https://www.w3.org/TR/WGSL/). Validation runs automatically when you use the `wgsl-in` front-end and checks:
+
+- Type correctness
+- Use of undefined variables or functions
+- Invalid control flow (e.g. `break` outside a loop)
+- Unsupported built-in usage
+
+The `naga::valid::Validator` is also part of the public API if you need to run validation explicitly:
+
+```rust
+let module = naga::front::wgsl::parse_str(source)?;
+
+let module_info = naga::valid::Validator::new(
+    naga::valid::ValidationFlags::all(),
+    naga::valid::Capabilities::all(),
+)
+.validate(&module)?;
+```
+
+## Crate features
+
+Naga compiles to a very small binary by default. Enable only the front-ends and back-ends you need:
+
+| Feature | Direction | Description |
+|---|---|---|
+| `wgsl-in` | Front-end | Parse WGSL. Fully validated. |
+| `spv-in` | Front-end | Parse SPIR-V binary. |
+| `glsl-in` | Front-end | Parse GLSL 440+ with Vulkan semantics. |
+| `spv-out` | Back-end | Generate SPIR-V binary. |
+| `msl-out` | Back-end | Generate Metal Shading Language. |
+| `msl-out-if-target-apple` | Back-end | MSL output only when targeting Apple platforms. |
+| `hlsl-out` | Back-end | Generate HLSL (Shader Model 5.0+). |
+| `hlsl-out-if-target-windows` | Back-end | HLSL output only when targeting Windows. |
+| `glsl-out` | Back-end | Generate GLSL 330+ or GLSL ES 300+. |
+| `wgsl-out` | Back-end | Generate WGSL. Partial support. |
+| `dot-out` | Back-end | Generate GraphViz DOT for control-flow visualization. |
+
+<Note>
+Naga's default feature set is empty. The `wgpu` and `wgpu-hal` crates enable the features they need automatically — you only need to add features explicitly when using Naga as a standalone crate.
+</Note>
+
+## `naga-cli` — command-line tool
+
+`naga-cli` exposes Naga as a command-line converter and validator.
+
+**Install:**
+
+```bash
+# Latest release
+cargo install naga-cli
+
+# Development version (from the wgpu monorepo)
+cargo install naga-cli --git https://github.com/gfx-rs/wgpu.git
+```
+
+**Usage:**
+
+```bash
+# Validate a WGSL shader (no output file)
+naga shader.wgsl
+
+# Convert SPIR-V to Metal and dump the IR to a text file
+naga shader.spv shader.metal
+
+# Convert SPIR-V to Metal; also dump the SPIR-V flow graph
+naga shader.spv shader.metal --flow-dir flow-dir
+
+# Convert WGSL to GLSL vertex stage under ES 3.20 profile
+naga shader.wgsl shader.vert --profile es310
+
+# Dump the IR of a SPIR-V shader to a text file
+naga shader.spv shader.txt
+```
+
+The output format is inferred from the file extension of the output path (`.metal`, `.hlsl`, `.glsl`, `.spv`, `.wgsl`).
+
+## Using Naga directly vs. via wgpu
+
+Use Naga directly when:
+
+- **Offline shader compilation**: translate shaders at build time and ship the result, avoiding runtime compilation overhead.
+- **Shader validation tooling**: run validation in a CI pipeline or editor plugin.
+- **Custom shader pipelines**: you are building a game engine or renderer that manages graphics API objects directly via `wgpu-hal` or a native API.
+
+For typical wgpu applications, let `device.create_shader_module` handle everything automatically.
+
+<CardGroup cols={2}>
+  <Card title="Frontends" icon="arrow-right-to-bracket" href="/api/naga/frontends">
+    Parsing WGSL, SPIR-V, and GLSL into Naga IR
+  </Card>
+  <Card title="Backends" icon="arrow-right-from-bracket" href="/api/naga/backends">
+    Generating HLSL, MSL, GLSL, SPIR-V, and WGSL from Naga IR
+  </Card>
+</CardGroup>

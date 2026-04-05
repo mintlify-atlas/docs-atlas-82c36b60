@@ -1,0 +1,156 @@
+---
+title: "Installation"
+description: "Add wgpu to your Cargo project and configure features"
+---
+
+## Basic dependency
+
+Add wgpu to `Cargo.toml`:
+
+```toml Cargo.toml
+[dependencies]
+wgpu = "29"
+```
+
+The default feature set enables all native backends (Vulkan, Metal, D3D12, OpenGL/GLES), the WGSL shader language, and `std`/`parking_lot` support — the right starting point for most desktop applications.
+
+<Note>
+  The minimum supported Rust version (MSRV) for the `wgpu` crate is **1.87**. The MSRV is treated as a breaking change and only bumped in major releases. Running wgpu's own tests or examples requires **1.93**.
+</Note>
+
+## Feature flags
+
+### Backends
+
+| Feature | Enables | Platforms |
+|---------|---------|-----------|
+| `dx12` | D3D12 backend | Windows |
+| `metal` | Metal backend | macOS, iOS |
+| `vulkan` | Vulkan backend | Windows, Linux, Android |
+| `gles` | OpenGL ES backend | Windows, Linux, Android, Emscripten |
+| `webgpu` | Browser-native WebGPU backend | WebAssembly |
+| `angle` | OpenGL via ANGLE | macOS only |
+| `vulkan-portability` | Vulkan via MoltenVK | macOS, iOS only |
+| `webgl` | WebGL2 backend | WebAssembly only |
+| `noop` | No-op backend for testing — creates resources but performs no computation | All |
+
+### Shading language input
+
+| Feature | Enables |
+|---------|---------|
+| `wgsl` | WGSL shader input (on by default) |
+| `spirv` | SPIR-V shader input |
+| `glsl` | GLSL shader input |
+| `naga-ir` | Direct Naga IR input |
+
+### Other features
+
+| Feature | Description |
+|---------|-------------|
+| `std` | Standard library support — enables better error reporting and multithreading (on by default) |
+| `parking_lot` | Uses `parking_lot` mutexes instead of `std::sync::Mutex` (on by default) |
+| `serde` | `Serialize`/`Deserialize` implementations for common wgpu types |
+| `static-dxc` | Statically links DXC — no `dxcompiler.dll` required at runtime (Windows D3D12) |
+| `strict_asserts` | Enables extra runtime validation checks in release builds |
+| `trace` | Writes API trace capture files (also enables `serde`) |
+| `counters` | Exposes resource and event counters for debugging (counters return 0 when disabled) |
+| `fragile-send-sync-non-atomic-wasm` | Artificially marks WebGPU/WebGL objects as `Send + Sync` on single-threaded WASM |
+
+## Platform configurations
+
+<Tabs>
+  <Tab title="Native (default)">
+    The default feature set works for all native desktop and mobile targets. To reduce binary size, disable unused backends:
+
+    <CodeGroup>
+
+    ```toml All native backends (default)
+    [dependencies]
+    wgpu = "29"
+    ```
+
+    ```toml Windows only (D3D12 + Vulkan)
+    [dependencies]
+    wgpu = { version = "29", default-features = false, features = [
+        "std",
+        "parking_lot",
+        "wgsl",
+        "dx12",
+        "vulkan",
+    ] }
+    ```
+
+    ```toml macOS / iOS only (Metal)
+    [dependencies]
+    wgpu = { version = "29", default-features = false, features = [
+        "std",
+        "parking_lot",
+        "wgsl",
+        "metal",
+    ] }
+    ```
+
+    </CodeGroup>
+
+    To statically link the DXC compiler on Windows and avoid shipping `dxcompiler.dll`:
+
+    ```toml
+    [dependencies]
+    wgpu = { version = "29", features = ["static-dxc"] }
+    ```
+  </Tab>
+
+  <Tab title="WASM / WebGPU">
+    Use the browser's native WebGPU implementation. Requires Chrome 113+, Firefox Nightly, or Safari 18+.
+
+    ```toml Cargo.toml
+    [target.'cfg(target_arch = "wasm32")'.dependencies]
+    wgpu = { version = "29", default-features = false, features = [
+        "std",
+        "wgsl",
+        "webgpu",
+    ] }
+    ```
+  </Tab>
+
+  <Tab title="WASM / WebGL2">
+    Falls back to WebGL2 via the wgpu-core/naga pipeline. Supports a wider range of browsers but has lower capability limits.
+
+    ```toml Cargo.toml
+    [target.'cfg(target_arch = "wasm32")'.dependencies]
+    wgpu = { version = "29", default-features = false, features = [
+        "std",
+        "wgsl",
+        "webgl",
+    ] }
+    ```
+
+    <Note>
+      WebGL2 has significant capability restrictions compared to WebGPU. Compute shaders are not available when using the `webgl` backend.
+    </Note>
+  </Tab>
+</Tabs>
+
+## Environment variables
+
+wgpu reads these environment variables at runtime to control adapter selection and backend behavior. They work with examples, tests, and any code using `::from_env()` methods.
+
+| Variable | Description | Example values |
+|----------|-------------|----------------|
+| `WGPU_BACKEND` | Comma-separated list of backends to use | `vulkan`, `metal`, `dx12`, `gl` |
+| `WGPU_ADAPTER_NAME` | Case-insensitive substring to match adapter by name | `1080` matches `NVIDIA GeForce 1080ti` |
+| `WGPU_DX12_COMPILER` | DX12 shader compiler to use | `dxc`, `static-dxc`, `fxc` |
+
+```bash
+# Force Vulkan and select an AMD adapter
+WGPU_BACKEND=vulkan WGPU_ADAPTER_NAME=AMD cargo run
+
+# Use DXC without an external DLL (requires static-dxc feature)
+WGPU_DX12_COMPILER=static-dxc cargo run
+```
+
+<Note>
+  `WGPU_DX12_COMPILER=dxc` requires `dxcompiler.dll` (minimum version 1.8.2502) in the working directory. `static-dxc` requires the `static-dxc` Cargo feature. Without either, wgpu falls back to `fxc`.
+</Note>
+
+See the [wgpu docs.rs page](https://docs.rs/wgpu/latest/wgpu/index.html?search=env) for the full list of supported environment variables.

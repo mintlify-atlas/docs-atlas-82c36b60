@@ -1,97 +1,105 @@
 ---
-title: "Introduction"
-description: "Welcome to the new home for your documentation"
+title: "wgpu — Cross-Platform Graphics for Rust"
+description: "A safe, pure-Rust graphics API based on the WebGPU standard. Runs natively on Vulkan, Metal, D3D12, and OpenGL — and in browsers via WebGPU or WebGL2."
 ---
 
-## Setting up
+wgpu is a cross-platform, safe, pure-Rust graphics API. It runs natively on Vulkan, Metal, D3D12, and OpenGL, and on top of WebGL2 and WebGPU on WebAssembly. The API is based on the [WebGPU standard](https://gpuweb.github.io/gpuweb/) and serves as the core of the WebGPU integration in Firefox, Servo, and Deno.
 
-Get your documentation site up and running in minutes.
-
-<Card
-  title="Start here"
-  icon="rocket"
-  href="/quickstart"
-  horizontal
->
-  Follow our three step quickstart guide.
-</Card>
-
-## Make it yours
-
-Design a docs site that looks great and empowers your users.
-
-<Columns cols={2}>
-  <Card
-    title="Edit locally"
-    icon="pen-to-square"
-    href="/development"
-  >
-    Edit your docs locally and preview them in real time.
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Write your first wgpu program — a working compute shader — in minutes.
   </Card>
-  <Card
-    title="Customize your site"
-    icon="palette"
-    href="/essentials/settings"
-  >
-    Customize the design and colors of your site to match your brand.
+  <Card title="Installation" icon="box" href="/installation">
+    Add wgpu to your Cargo project and configure features for your target platform.
   </Card>
-    <Card
-    title="Set up navigation"
-    icon="map"
-    href="/essentials/navigation"
-  >
-    Organize your docs to help users find what they need and succeed with your product.
+  <Card title="Core Concepts" icon="layer-group" href="/concepts/instance-adapter-device">
+    Understand the Instance, Adapter, Device, and Queue pipeline at the heart of wgpu.
   </Card>
-  <Card
-    title="API documentation"
-    icon="terminal"
-    href="/api-reference/introduction"
-  >
-    Auto-generate API documentation from OpenAPI specifications.
+  <Card title="API Reference" icon="code" href="/api/instance">
+    Browse the full public API surface — types, methods, and descriptors.
   </Card>
-</Columns>
+</CardGroup>
 
-## Create beautiful pages
+## Why wgpu?
 
-Everything you need to create world-class documentation.
+<CardGroup cols={2}>
+  <Card title="Cross-platform by design" icon="globe">
+    One API targets Vulkan, Metal, D3D12, OpenGL, WebGL2, and WebGPU. Write once, run anywhere.
+  </Card>
+  <Card title="Safe Rust API" icon="shield-halved">
+    No unsafe code required at the user level. wgpu-core handles all validation and resource tracking.
+  </Card>
+  <Card title="WebGPU standard" icon="file-contract">
+    Based on the W3C WebGPU specification. Knowledge transfers between native and web targets.
+  </Card>
+  <Card title="WGSL shader language" icon="microchip">
+    First-class support for WGSL, plus SPIR-V and GLSL via Naga, the built-in shader translator.
+  </Card>
+</CardGroup>
 
-<Columns cols={2}>
-  <Card
-    title="Write with MDX"
-    icon="pen-fancy"
-    href="/essentials/markdown"
-  >
-    Use MDX to style your docs pages.
-  </Card>
-  <Card
-    title="Code samples"
-    icon="code"
-    href="/essentials/code"
-  >
-    Add sample code to demonstrate how to use your product.
-  </Card>
-  <Card
-    title="Images"
-    icon="image"
-    href="/essentials/images"
-  >
-    Display images and other media.
-  </Card>
-  <Card
-    title="Reusable snippets"
-    icon="recycle"
-    href="/essentials/reusable-snippets"
-  >
-    Write once and reuse across your docs.
-  </Card>
-</Columns>
+## Supported platforms
 
-## Need inspiration?
+| Backend | Windows | Linux/Android | macOS/iOS | Web (wasm) |
+|---------|---------|---------------|-----------|------------|
+| Vulkan  | ✅      | ✅            | 🌋        |            |
+| Metal   |         |               | ✅        |            |
+| D3D12   | ✅      |               |           |            |
+| OpenGL  | 🆗      | 🆗            | 📐        | 🆗 (WebGL2)|
+| WebGPU  |         |               |           | ✅         |
 
-<Card
-  title="See complete examples"
-  icon="stars"
-  href="https://mintlify.com/customers"
->
-  Browse our showcase of exceptional documentation sites.
-</Card>
+✅ First-class support · 🆗 Best-effort support · 📐 Requires ANGLE · 🌋 Requires MoltenVK
+
+## Get started in three steps
+
+<Steps>
+  <Step title="Add wgpu to your project">
+    Add `wgpu` to your `Cargo.toml`:
+
+    ```toml Cargo.toml
+    [dependencies]
+    wgpu = "29"
+    pollster = "0.4"
+    ```
+  </Step>
+  <Step title="Create an Instance and request a Device">
+    The `Instance` is your entry point. From it you enumerate adapters and open a logical `Device`:
+
+    ```rust main.rs
+    let instance = wgpu::Instance::default();
+    let adapter = pollster::block_on(instance.request_adapter(
+        &wgpu::RequestAdapterOptions::default(),
+    )).unwrap();
+    let (device, queue) = pollster::block_on(adapter.request_device(
+        &wgpu::DeviceDescriptor::default(),
+    )).unwrap();
+    ```
+  </Step>
+  <Step title="Submit GPU work">
+    Encode commands and submit them to the `Queue`:
+
+    ```rust main.rs
+    let mut encoder = device.create_command_encoder(
+        &wgpu::CommandEncoderDescriptor { label: Some("encoder") }
+    );
+    // record render or compute passes here
+    queue.submit(std::iter::once(encoder.finish()));
+    ```
+  </Step>
+</Steps>
+
+## Learn more
+
+<CardGroup cols={2}>
+  <Card title="First triangle guide" icon="triangle" href="/guides/first-triangle">
+    Step-by-step guide to rendering your first triangle with a render pipeline.
+  </Card>
+  <Card title="Compute shaders" icon="calculator" href="/guides/compute-shaders">
+    Run general-purpose GPU computations with compute pipelines and WGSL.
+  </Card>
+  <Card title="WebAssembly & web" icon="browser" href="/guides/wasm-web">
+    Compile wgpu to WASM and run it in a browser using WebGPU or WebGL2.
+  </Card>
+  <Card title="Debugging" icon="bug" href="/guides/debugging">
+    Use validation layers, API tracing, and RenderDoc to debug GPU programs.
+  </Card>
+</CardGroup>

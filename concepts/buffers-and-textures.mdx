@@ -1,0 +1,181 @@
+---
+title: "Buffers & Textures"
+description: "How wgpu represents GPU memory for data and images"
+---
+
+Buffers hold raw bytes; textures hold image data in a GPU-optimal layout. Both are created through `Device` and live on the GPU.
+
+## Buffers
+
+A `Buffer` is a contiguous region of GPU-accessible memory, analogous to `Box<[u8]>`. Its interpretation — vertex data, index data, uniforms, and so on — is determined by the `usage` flags and how the buffer is bound.
+
+### Creating a buffer
+
+```rust
+let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+    label: Some("my buffer"),
+    size: 1024,                   // size in bytes
+    usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST,
+    mapped_at_creation: false,
+});
+```
+
+### BufferUsages flags
+
+| Flag | Purpose |
+|---|---|
+| `COPY_SRC` | Can be the source of a copy operation |
+| `COPY_DST` | Can be the destination of a copy or `queue.write_buffer` |
+| `MAP_READ` | Can be mapped for CPU reads |
+| `MAP_WRITE` | Can be mapped for CPU writes |
+| `UNIFORM` | Can be bound as a uniform buffer in a shader |
+| `STORAGE` | Can be bound as a read/write storage buffer |
+| `INDEX` | Can be used as an index buffer in a render pass |
+| `VERTEX` | Can be used as a vertex buffer in a render pass |
+| `INDIRECT` | Can supply arguments to indirect draw/dispatch calls |
+
+### Writing to a buffer
+
+`queue.write_buffer` copies bytes from CPU memory through an internal staging allocation:
+
+```rust
+let data: &[f32] = &[1.0, 2.0, 3.0, 4.0];
+queue.write_buffer(&buffer, 0, bytemuck::cast_slice(data));
+```
+
+The upload is batched and flushed just before the next `queue.submit` call.
+
+### Convenience: create_buffer_init
+
+`wgpu::util::DeviceExt::create_buffer_init` creates a buffer already filled with data in one call:
+
+```rust
+use wgpu::util::DeviceExt;
+
+let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+    label: Some("vertex buffer"),
+    contents: bytemuck::cast_slice(&vertices),
+    usage: wgpu::BufferUsages::VERTEX,
+});
+```
+
+### Reading back from the GPU
+
+Buffers created with `MAP_READ` can be mapped so the CPU can read the bytes directly.
+The pattern: call `map_async`, drive completion with `device.poll`, then read inside the mapped range.
+
+```rust
+// Buffer must have BufferUsages::MAP_READ | COPY_DST.
+readback_buffer
+    .slice(..)
+    .map_async(wgpu::MapMode::Read, |result| {
+        result.expect("buffer map failed");
+    });
+
+// Drive completion: blocks until the GPU is done and the callback fires.
+device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+
+// Now safe to read.
+{
+    let view = readback_buffer.slice(..).get_mapped_range();
+    let floats: &[f32] = bytemuck::cast_slice(&*view);
+    println!("{floats:?}");
+} // drop view before unmap
+
+readback_buffer.unmap();
+```
+
+Rules:
+- `map_async` returns immediately; the callback fires after `device.poll` confirms the GPU is done.
+- Drop all `BufferView` / `BufferViewMut` handles before calling `unmap()`.
+- Do not submit GPU commands that access the buffer while it is mapped.
+
+---
+
+## Textures
+
+A `Texture` stores image data in a format and layout the GPU understands. Format, dimensions, mip levels, and sample count are fixed at creation time.
+
+### Creating a texture
+
+```rust
+let texture = device.create_texture(&wgpu::TextureDescriptor {
+    label: Some("albedo"),
+    size: wgpu::Extent3d {
+        width: 512,
+        height: 512,
+        depth_or_array_layers: 1,
+    },
+    mip_level_count: 1,
+    sample_count: 1,
+    dimension: wgpu::TextureDimension::D2,
+    format: wgpu::TextureFormat::Rgba8UnormSrgb,
+    usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+    view_formats: &[],
+});
+```
+
+`TextureDescriptor` fields:
+
+| Field | Purpose |
+|---|---|
+| `size` | `Extent3d`: width, height, and depth or array layer count |
+| `mip_level_count` | Number of mip levels (1 = no mipmapping) |
+| `sample_count` | Multisampling (1 = no MSAA) |
+| `dimension` | `D1`, `D2`, or `D3` |
+| `format` | Texel encoding |
+| `usage` | How the texture will be used |
+| `view_formats` | Additional formats this texture can be viewed as |
+
+### TextureUsages flags
+
+| Flag | Purpose |
+|---|---|
+| `COPY_SRC` | Can be the source of a copy |
+| `COPY_DST` | Can be the destination of a copy or `queue.write_texture` |
+| `TEXTURE_BINDING` | Can be bound in a shader as a sampled texture |
+| `STORAGE_BINDING` | Can be bound as a read/write storage texture |
+| `RENDER_ATTACHMENT` | Can be used as a render pass color or depth attachment |
+
+### Common formats
+
+| Format | Use case |
+|---|---|
+| `Rgba8UnormSrgb` | Albedo / color textures (sRGB encoded) |
+| `Bgra8UnormSrgb` | Common swapchain format on Windows and macOS |
+| `Rgba16Float` | HDR rendering |
+| `Depth32Float` | 32-bit depth buffer |
+| `R32Float` | Single-channel float (e.g. heightmaps, shadow maps) |
+
+### Creating a TextureView
+
+Pipelines and render passes consume `TextureView`, not `Texture` directly. Create a default view covering the entire texture:
+
+```rust
+let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+```
+
+---
+
+## Sampler
+
+A `Sampler` describes how a shader interpolates between texels and handles out-of-range UV coordinates:
+
+```rust
+let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+    label: Some("linear sampler"),
+    address_mode_u: wgpu::AddressMode::ClampToEdge,
+    address_mode_v: wgpu::AddressMode::ClampToEdge,
+    address_mode_w: wgpu::AddressMode::ClampToEdge,
+    mag_filter: wgpu::FilterMode::Linear,
+    min_filter: wgpu::FilterMode::Linear,
+    mipmap_filter: wgpu::FilterMode::Linear,
+    ..Default::default()
+});
+```
+
+| Field | Purpose |
+|---|---|
+| `address_mode_u/v/w` | Behaviour past the `[0, 1]` boundary: `ClampToEdge`, `Repeat`, `MirrorRepeat` |
+| `mag_filter` / `min_filter` | `Nearest` or `Linear` when magnifying / minifying |
+| `mipmap_filter` | `Nearest` or `Linear` blending between mip levels |

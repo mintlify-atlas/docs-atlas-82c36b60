@@ -1,0 +1,126 @@
+---
+title: "Pipelines & Shaders"
+description: "Render and compute pipelines, shader modules, and pipeline layouts"
+---
+
+A pipeline is a compiled GPU program that combines shaders with fixed-function state. wgpu has two pipeline types: `RenderPipeline` for graphics and `ComputePipeline` for compute.
+
+## Shader modules
+
+Load a WGSL shader with `include_wgsl!`:
+
+```rust
+let shader = device.create_shader_module(wgpu::include_wgsl!("shader.wgsl"));
+```
+
+Or build the descriptor manually:
+
+```rust
+let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+    label: Some("my-shader"),
+    source: wgpu::ShaderSource::Wgsl(include_str!("shader.wgsl").into()),
+});
+```
+
+<Note>
+SPIR-V input requires the `spirv` Cargo feature. GLSL input requires the `glsl` feature.
+</Note>
+
+## Pipeline layout
+
+A `PipelineLayout` describes which bind groups the pipeline expects:
+
+```rust
+let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+    label: Some("layout"),
+    bind_group_layouts: &[Some(&bind_group_layout)],
+    immediate_size: 0,
+});
+```
+
+## Render pipeline
+
+```rust
+let render_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+    label: Some("render"),
+    layout: Some(&pipeline_layout),
+    vertex: wgpu::VertexState {
+        module: &shader,
+        entry_point: Some("vs_main"),
+        buffers: &[],                    // vertex buffer layouts
+        compilation_options: Default::default(),
+    },
+    fragment: Some(wgpu::FragmentState {
+        module: &shader,
+        entry_point: Some("fs_main"),
+        targets: &[Some(wgpu::ColorTargetState {
+            format: surface_format,
+            blend: Some(wgpu::BlendState::REPLACE),
+            write_mask: wgpu::ColorWrites::ALL,
+        })],
+        compilation_options: Default::default(),
+    }),
+    primitive: wgpu::PrimitiveState {
+        topology: wgpu::PrimitiveTopology::TriangleList,
+        cull_mode: Some(wgpu::Face::Back),
+        ..Default::default()
+    },
+    depth_stencil: None,
+    multisample: wgpu::MultisampleState::default(),
+    multiview: None,
+    cache: None,
+});
+```
+
+### Vertex buffer layout
+
+Describe vertex attributes for interleaved data:
+
+```rust
+use wgpu::vertex_attr_array;
+
+let vertex_buffer_layout = wgpu::VertexBufferLayout {
+    array_stride: std::mem::size_of::<[f32; 5]>() as wgpu::BufferAddress,
+    step_mode: wgpu::VertexStepMode::Vertex,
+    attributes: &vertex_attr_array![
+        0 => Float32x3,   // position
+        1 => Float32x2,   // uv
+    ],
+};
+```
+
+### Primitive topology
+
+| `PrimitiveTopology` | Description |
+|---------------------|-------------|
+| `TriangleList` | Every 3 vertices form a triangle |
+| `TriangleStrip` | Consecutive triangles sharing edges |
+| `LineList` | Every 2 vertices form a line |
+| `LineStrip` | Connected line segments |
+| `PointList` | Each vertex is a point |
+
+## Compute pipeline
+
+```rust
+let compute_pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+    label: Some("compute"),
+    layout: Some(&pipeline_layout),
+    module: &shader,
+    entry_point: Some("main"),
+    compilation_options: wgpu::PipelineCompilationOptions::default(),
+    cache: None,
+});
+```
+
+<Tip>
+Pass `cache: Some(&pipeline_cache)` using a `PipelineCache` (requires `Features::PIPELINE_CACHE`) to avoid recompiling shaders between runs.
+</Tip>
+
+<CardGroup cols={2}>
+  <Card title="Bind groups" icon="link" href="/api/bind-groups">
+    Connect resources to pipeline bindings.
+  </Card>
+  <Card title="Command encoder" icon="terminal" href="/api/command-encoder">
+    Record draw and dispatch commands.
+  </Card>
+</CardGroup>

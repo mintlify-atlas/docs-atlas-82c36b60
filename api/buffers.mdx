@@ -1,0 +1,105 @@
+---
+title: "Buffers"
+description: "GPU memory allocations for vertices, indices, uniforms, storage data, and more"
+---
+
+A `Buffer` is a contiguous block of GPU memory. Buffers are used for vertex data, index data, uniform values, storage data read and written by shaders, and staging data transferred between CPU and GPU.
+
+## Creating a buffer
+
+```rust
+let buffer = device.create_buffer(&wgpu::BufferDescriptor {
+    label: Some("my-buffer"),
+    size: 1024,                          // size in bytes
+    usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+    mapped_at_creation: false,
+});
+```
+
+Use `create_buffer_init` (from the `wgpu::util::DeviceExt` trait) to create a buffer with initial data:
+
+```rust
+use wgpu::util::DeviceExt;
+
+let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+    label: Some("vertices"),
+    contents: bytemuck::cast_slice(&vertex_data),
+    usage: wgpu::BufferUsages::VERTEX,
+});
+```
+
+## Buffer usages
+
+`BufferUsages` is a bitflag — combine flags with `|`.
+
+| Flag | Description |
+|------|-------------|
+| `MAP_READ` | Can be mapped for CPU reading. Must pair with `COPY_DST`. |
+| `MAP_WRITE` | Can be mapped for CPU writing. Must pair with `COPY_SRC`. |
+| `COPY_SRC` | Can be the source of a copy operation. |
+| `COPY_DST` | Can be the destination of a copy or `write_buffer`. |
+| `INDEX` | Used as an index buffer in a render pass. |
+| `VERTEX` | Used as a vertex buffer in a render pass. |
+| `UNIFORM` | Bound as a uniform buffer in a shader. |
+| `STORAGE` | Bound as a storage buffer in a shader (read/write). |
+| `INDIRECT` | Used as an indirect draw or dispatch buffer. |
+| `QUERY_RESOLVE` | Destination for `resolve_query_set`. |
+
+## Writing to a buffer
+
+Use `queue.write_buffer` to upload data from CPU to GPU:
+
+```rust
+queue.write_buffer(&buffer, 0, bytemuck::cast_slice(&my_data));
+```
+
+<Note>
+`write_buffer` requires `COPY_DST` usage. It is the preferred way to upload data for most use cases.
+</Note>
+
+## Reading back from a buffer
+
+Reading GPU results requires a staging buffer with `MAP_READ | COPY_DST`:
+
+```rust
+// 1. Copy from GPU buffer to staging buffer
+encoder.copy_buffer_to_buffer(&output_buffer, 0, &staging_buffer, 0, size);
+queue.submit([encoder.finish()]);
+
+// 2. Map the staging buffer
+let buffer_slice = staging_buffer.slice(..);
+buffer_slice.map_async(wgpu::MapMode::Read, |_| {});
+
+// 3. Wait for the GPU to finish
+device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+
+// 4. Read the data
+let data = buffer_slice.get_mapped_range();
+let result: &[f32] = bytemuck::cast_slice(&data);
+
+// 5. Unmap when done
+drop(data);
+staging_buffer.unmap();
+```
+
+## Key methods
+
+| Method | Description |
+|--------|-------------|
+| `buffer.slice(range)` | Returns a `BufferSlice` for mapping or binding |
+| `buffer_slice.map_async(mode, callback)` | Requests a map; callback fires when ready |
+| `buffer_slice.get_mapped_range()` | Returns a read-only `BufferView` |
+| `buffer_slice.get_mapped_range_mut()` | Returns a writable `BufferViewMut` |
+| `buffer.unmap()` | Releases the mapping |
+| `buffer.size()` | Returns the size in bytes |
+| `buffer.usage()` | Returns the `BufferUsages` flags |
+| `buffer.destroy()` | Frees GPU memory immediately |
+
+<CardGroup cols={2}>
+  <Card title="Textures" icon="image" href="/api/textures">
+    GPU image resources and samplers.
+  </Card>
+  <Card title="Bind groups" icon="link" href="/api/bind-groups">
+    Connect buffers and textures to shaders.
+  </Card>
+</CardGroup>

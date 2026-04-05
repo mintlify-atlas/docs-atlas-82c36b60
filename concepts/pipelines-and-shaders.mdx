@@ -1,0 +1,142 @@
+---
+title: "Pipelines & Shaders"
+description: "Compile shaders and define the GPU processing pipeline"
+---
+
+A pipeline combines compiled shader code with fixed-function state into a single GPU object. wgpu has two pipeline types: `RenderPipeline` for graphics and `ComputePipeline` for general-purpose GPU computation.
+
+## ShaderModule
+
+A `ShaderModule` holds compiled shader code. The primary language is WGSL; SPIR-V and GLSL are available behind the `spirv` and `glsl` feature flags.
+
+```rust
+let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+    label: Some("main shader"),
+    source: wgpu::ShaderSource::Wgsl(
+        std::borrow::Cow::Borrowed(include_str!("shader.wgsl"))
+    ),
+});
+```
+
+The `wgpu::include_wgsl!` macro is a shorthand for the common case:
+
+```rust
+let shader = device.create_shader_module(wgpu::include_wgsl!("shader.wgsl"));
+```
+
+`create_shader_module` validates and compiles the shader immediately. Compilation is expensive and can consume significant stack space, so create shader modules once and reuse them.
+
+---
+
+## PipelineLayout
+
+A `PipelineLayout` declares which `BindGroupLayout`s and push constant ranges a pipeline uses. Sharing a layout across pipelines avoids rebinding descriptor sets when switching between them.
+
+```rust
+let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+    label: None,
+    bind_group_layouts: &[&bind_group_layout],
+    push_constant_ranges: &[],
+});
+```
+
+Pass `layout: None` in a pipeline descriptor to use the *default layout*, which wgpu derives automatically from shader reflection. Default layouts are convenient but cannot be shared across pipelines.
+
+---
+
+## RenderPipeline
+
+`RenderPipeline` encodes the full graphics pipeline: vertex processing, primitive assembly, rasterization, and fragment shading.
+
+```rust
+let pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+    label: Some("render"),
+    layout: Some(&pipeline_layout),
+    vertex: wgpu::VertexState {
+        module: &shader,
+        entry_point: Some("vs_main"),
+        buffers: &[],
+        compilation_options: Default::default(),
+    },
+    fragment: Some(wgpu::FragmentState {
+        module: &shader,
+        entry_point: Some("fs_main"),
+        targets: &[Some(surface_format.into())],
+        compilation_options: Default::default(),
+    }),
+    primitive: wgpu::PrimitiveState::default(),
+    depth_stencil: None,
+    multisample: wgpu::MultisampleState::default(),
+    multiview: None,
+    cache: None,
+});
+```
+
+`RenderPipelineDescriptor` fields:
+
+| Field | Type | Purpose |
+|---|---|---|
+| `layout` | `Option<&PipelineLayout>` | Bind group layouts; `None` uses the auto-derived layout |
+| `vertex` | `VertexState` | Vertex shader, entry point, and vertex buffer layouts |
+| `fragment` | `Option<FragmentState>` | Fragment shader and color targets; `None` for depth-only passes |
+| `primitive` | `PrimitiveState` | Topology, front-face winding, cull mode |
+| `depth_stencil` | `Option<DepthStencilState>` | Depth/stencil format, comparison function, and write masks |
+| `multisample` | `MultisampleState` | MSAA sample count and mask |
+| `multiview` | `Option<NonZeroU32>` | Multiview layer mask |
+| `cache` | `Option<&PipelineCache>` | Persistent pipeline cache to speed up repeated compilation |
+
+### VertexBufferLayout
+
+Describe the layout of each vertex buffer slot using `VertexBufferLayout`:
+
+```rust
+let vertex_layout = wgpu::VertexBufferLayout {
+    array_stride: std::mem::size_of::<[f32; 5]>() as wgpu::BufferAddress,
+    step_mode: wgpu::VertexStepMode::Vertex,
+    attributes: &wgpu::vertex_attr_array![
+        0 => Float32x3,  // position at shader location 0
+        1 => Float32x2,  // uv at shader location 1
+    ],
+};
+```
+
+The `vertex_attr_array!` macro computes byte offsets automatically.
+
+---
+
+## ComputePipeline
+
+`ComputePipeline` wraps a single compute shader stage with no rasterization state:
+
+```rust
+let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+    label: Some("compute"),
+    layout: Some(&pipeline_layout),
+    module: &shader,
+    entry_point: Some("main"),
+    compilation_options: Default::default(),
+    cache: None,
+});
+```
+
+`ComputePipelineDescriptor` fields:
+
+| Field | Purpose |
+|---|---|
+| `layout` | Bind group layouts; `None` uses the auto-derived layout |
+| `module` | Compiled shader module |
+| `entry_point` | Name of the `@compute` entry point; `None` if the module has exactly one |
+| `compilation_options` | Advanced constant overrides and zero-init settings |
+| `cache` | Pipeline cache |
+
+Dispatch workgroups from a compute pass:
+
+```rust
+// In WGSL:
+// @compute @workgroup_size(64, 1, 1)
+// fn main(@builtin(global_invocation_id) gid: vec3<u32>) { … }
+
+compute_pass.set_pipeline(&pipeline);
+compute_pass.set_bind_group(0, &bind_group, &[]);
+compute_pass.dispatch_workgroups(16, 1, 1); // 16 × 64 = 1024 invocations
+```

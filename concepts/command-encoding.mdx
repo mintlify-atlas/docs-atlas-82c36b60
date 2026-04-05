@@ -1,0 +1,150 @@
+---
+title: "Command encoding"
+description: "Record GPU commands and submit them for execution"
+---
+
+wgpu separates *recording* from *executing*. You record commands into a `CommandEncoder`, finish it into a `CommandBuffer`, and submit that to the `Queue`. The GPU then executes the work asynchronously.
+
+```
+CommandEncoder  →  .finish()  →  CommandBuffer  →  queue.submit()  →  GPU
+```
+
+## CommandEncoder
+
+Create one per frame (or per logical unit of work):
+
+```rust
+let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+    label: None,
+});
+```
+
+An encoder records passes and copy operations but does not execute anything on the GPU. All recorded work is deferred until `queue.submit`.
+
+---
+
+## RenderPass
+
+A render pass draws geometry to one or more texture attachments. Begin one with `encoder.begin_render_pass`, record draw commands inside it, then end the pass by dropping the `RenderPass` value (or letting it go out of scope).
+
+```rust
+{
+    let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+        label: None,
+        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+            view: &view,
+            resolve_target: None,
+            ops: wgpu::Operations {
+                load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                store: wgpu::StoreOp::Store,
+            },
+        })],
+        depth_stencil_attachment: None,
+        timestamp_writes: None,
+        occlusion_query_set: None,
+    });
+
+    rpass.set_pipeline(&render_pipeline);
+    rpass.set_bind_group(0, &bind_group, &[]);
+    rpass.set_vertex_buffer(0, vertex_buffer.slice(..));
+    rpass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint16);
+
+    rpass.draw(0..3, 0..1);              // non-indexed: vertex range, instance range
+    rpass.draw_indexed(0..6, 0, 0..1);  // indexed: index range, base vertex, instances
+}
+```
+
+### Load and store ops
+
+| `LoadOp` | Effect at pass start |
+|---|---|
+| `Clear(color)` | Fill the attachment with the given color before drawing |
+| `Load` | Preserve existing contents |
+
+| `StoreOp` | Effect at pass end |
+|---|---|
+| `Store` | Write the rendered result back to the texture |
+| `Discard` | Throw away the result (useful for transient MSAA resolve sources) |
+
+### Depth/stencil attachment
+
+```rust
+depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+    view: &depth_view,
+    depth_ops: Some(wgpu::Operations {
+        load: wgpu::LoadOp::Clear(1.0),
+        store: wgpu::StoreOp::Store,
+    }),
+    stencil_ops: None,
+}),
+```
+
+---
+
+## ComputePass
+
+A compute pass dispatches compute workgroups. Begin one with `encoder.begin_compute_pass`:
+
+```rust
+{
+    let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+        label: None,
+        timestamp_writes: None,
+    });
+
+    cpass.set_pipeline(&compute_pipeline);
+    cpass.set_bind_group(0, &bind_group, &[]);
+    cpass.dispatch_workgroups(64, 1, 1);               // x, y, z workgroup counts
+    // cpass.dispatch_workgroups_indirect(&args_buffer, 0); // read counts from a buffer
+}
+```
+
+---
+
+## Buffer copy commands
+
+Copy operations record at the encoder level, outside any pass:
+
+```rust
+// Buffer → Buffer
+encoder.copy_buffer_to_buffer(
+    &source_buffer,  // source
+    0,               // source byte offset
+    &dest_buffer,    // destination
+    0,               // destination byte offset
+    size_in_bytes,
+);
+
+// Texture → Buffer (GPU readback)
+encoder.copy_texture_to_buffer(
+    texture.as_image_copy(),
+    wgpu::TexelCopyBufferInfo {
+        buffer: &readback_buffer,
+        layout: wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(bytes_per_row),
+            rows_per_image: Some(height),
+        },
+    },
+    texture.size(),
+);
+```
+
+---
+
+## Finishing and submitting
+
+When recording is complete, call `encoder.finish()` to produce a `CommandBuffer`, then submit it:
+
+```rust
+let cb = encoder.finish();
+queue.submit([cb]);
+```
+
+`queue.submit` accepts any iterator of `CommandBuffer`s. You can submit multiple encoders in one call to guarantee execution order:
+
+```rust
+queue.submit([encoder_a.finish(), encoder_b.finish()]);
+```
+
+`submit` returns a `SubmissionIndex` you can pass to `device.poll` to wait for a specific submission to complete on the CPU.

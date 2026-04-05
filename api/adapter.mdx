@@ -1,0 +1,229 @@
+---
+title: "Adapter"
+description: "Represents a physical GPU or software renderer — inspect capabilities and open a Device"
+---
+
+An `Adapter` is a handle to a physical graphics and/or compute device. You obtain one from [`Instance::request_adapter`](/api/instance) or `Instance::enumerate_adapters`. Use it to inspect what features and limits the hardware supports, and then call `request_device` to open a logical connection.
+
+<Note>
+Per the WebGPU specification, an `Adapter` should only be used once to create a device. If you need another device, call `Instance::request_adapter` again to get a fresh `Adapter`. wgpu does not currently enforce this restriction, but relying on it is not recommended.
+</Note>
+
+## Opening a Device
+
+### `request_device`
+
+```rust
+pub fn request_device(
+    &self,
+    desc: &DeviceDescriptor<'_>,
+) -> impl Future<Output = Result<(Device, Queue), RequestDeviceError>>
+```
+
+Opens a logical connection to the GPU, returning a [`Device`](/api/device-queue) and a [`Queue`](/api/device-queue). The `DeviceDescriptor` specifies which features and limits your application requires.
+
+```rust
+let (device, queue) = adapter
+    .request_device(&wgpu::DeviceDescriptor {
+        label: Some("main device"),
+        required_features: wgpu::Features::TIMESTAMP_QUERY,
+        required_limits: wgpu::Limits::default(),
+        memory_hints: wgpu::MemoryHints::default(),
+    })
+    .await
+    .expect("failed to open device");
+```
+
+---
+
+## Capability Inspection
+
+### `get_info`
+
+```rust
+pub fn get_info(&self) -> AdapterInfo
+```
+
+Returns human-readable and machine-readable metadata about the adapter (name, vendor, device ID, driver, backend, etc.).
+
+### `features`
+
+```rust
+pub fn features(&self) -> Features
+```
+
+Returns the full set of optional features this adapter supports. Pass a subset to `DeviceDescriptor::required_features` when opening a device.
+
+### `limits`
+
+```rust
+pub fn limits(&self) -> Limits
+```
+
+Returns the best resource limits this adapter can offer. You can request lower limits in `DeviceDescriptor::required_limits` — requesting higher ones will panic.
+
+### `get_texture_format_features`
+
+```rust
+pub fn get_texture_format_features(
+    &self,
+    format: TextureFormat,
+) -> TextureFormatFeatures
+```
+
+Returns which usages and additional capabilities are available for a specific texture format on this adapter.
+
+### `get_downlevel_capabilities`
+
+```rust
+pub fn get_downlevel_capabilities(&self) -> DownlevelCapabilities
+```
+
+Returns downlevel capability flags that indicate whether certain non-WebGPU behaviors are supported (e.g. non-power-of-two textures, anisotropic filtering, indirect drawing).
+
+### `is_surface_supported`
+
+```rust
+pub fn is_surface_supported(&self, surface: &Surface<'_>) -> bool
+```
+
+Returns `true` if this adapter can present to the given surface.
+
+---
+
+## Key Types
+
+### `AdapterInfo`
+
+Returned by `adapter.get_info()`.
+
+<ParamField path="name" type="String">
+  Human-readable adapter name (e.g. `"NVIDIA GeForce RTX 4090"`).
+</ParamField>
+
+<ParamField path="vendor" type="u32">
+  Backend-specific vendor ID. Generally a 16-bit PCI vendor ID.
+</ParamField>
+
+<ParamField path="device" type="u32">
+  Backend-specific device ID. Generally a 16-bit PCI device ID.
+</ParamField>
+
+<ParamField path="device_type" type="DeviceType">
+  Classification of the device: `DiscreteGpu`, `IntegratedGpu`, `VirtualGpu`, `Cpu`, or `Other`.
+</ParamField>
+
+<ParamField path="driver" type="String">
+  Driver name string.
+</ParamField>
+
+<ParamField path="driver_info" type="String">
+  Additional driver version or description string.
+</ParamField>
+
+<ParamField path="backend" type="Backend">
+  The backend API in use: `Vulkan`, `Metal`, `Dx12`, `Gl`, `BrowserWebGpu`, or `Noop`.
+</ParamField>
+
+### `DeviceType`
+
+| Variant | Description |
+|---------|-------------|
+| `DiscreteGpu` | Discrete GPU with its own memory |
+| `IntegratedGpu` | Integrated GPU sharing system memory |
+| `VirtualGpu` | Virtual or hosted GPU |
+| `Cpu` | Software (CPU) renderer |
+| `Other` | Unknown or other |
+
+### `Features`
+
+`Features` is a bitflags type representing optional GPU capabilities. You must check that the adapter supports a feature before requesting it on the device.
+
+**Commonly used features:**
+
+| Flag | Description |
+|------|-------------|
+| `TEXTURE_COMPRESSION_BC` | BC1–BC7 compressed texture formats (desktop) |
+| `TEXTURE_COMPRESSION_ETC2` | ETC2/EAC compressed textures (mobile) |
+| `TEXTURE_COMPRESSION_ASTC` | ASTC compressed textures (mobile) |
+| `TIMESTAMP_QUERY` | GPU timestamp queries in encoders and passes |
+| `PIPELINE_STATISTICS_QUERY` | Pipeline statistics query sets |
+| `INDIRECT_FIRST_INSTANCE` | Non-zero `first_instance` in indirect draws |
+| `SHADER_F16` | 16-bit float support in shaders |
+| `POLYGON_MODE_LINE` | Wireframe rendering |
+| `PUSH_CONSTANTS` | Push constants in shaders (native only) |
+| `DEPTH_CLIP_CONTROL` | Disable depth clipping |
+| `FLOAT32_FILTERABLE` | Filterable `f32` textures |
+| `DUAL_SOURCE_BLENDING` | Dual-source blending |
+| `MULTI_DRAW_INDIRECT` | Multi-draw indirect calls |
+| `VERTEX_WRITABLE_STORAGE` | Writeable storage buffers in vertex shaders |
+| `BUFFER_BINDING_ARRAY` | Arrays of buffer bindings |
+| `TEXTURE_BINDING_ARRAY` | Arrays of texture bindings |
+| `PIPELINE_CACHE` | Pipeline caching for faster startup |
+
+```rust
+if adapter.features().contains(wgpu::Features::TIMESTAMP_QUERY) {
+    println!("timestamp queries supported");
+}
+```
+
+### `Limits`
+
+`Limits` defines the maximum resource sizes and counts the device will accept. Key fields:
+
+| Field | Default | Description |
+|-------|---------|-------------|
+| `max_texture_dimension_1d` | 8192 | Max width of a 1D texture |
+| `max_texture_dimension_2d` | 8192 | Max width/height of a 2D texture |
+| `max_texture_dimension_3d` | 2048 | Max size of a 3D texture dimension |
+| `max_texture_array_layers` | 256 | Max array layers in a texture array |
+| `max_bind_groups` | 4 | Max simultaneously bound bind groups |
+| `max_bindings_per_bind_group` | 1000 | Max entries in a single bind group layout |
+| `max_uniform_buffer_binding_size` | 65536 | Max bytes in a uniform buffer binding |
+| `max_storage_buffer_binding_size` | 134217728 | Max bytes in a storage buffer binding |
+| `max_buffer_size` | 268435456 | Max byte size of a single buffer |
+| `max_vertex_buffers` | 8 | Max simultaneously bound vertex buffers |
+| `max_vertex_attributes` | 16 | Max vertex attributes |
+| `max_compute_workgroup_size_x/y/z` | 256 | Max workgroup size per dimension |
+| `max_compute_workgroups_per_dimension` | 65535 | Max dispatch size per dimension |
+| `min_uniform_buffer_offset_alignment` | 256 | Required alignment for uniform buffer offsets |
+| `min_storage_buffer_offset_alignment` | 256 | Required alignment for storage buffer offsets |
+
+Use `Limits::default()` for WebGPU-compatible limits, `Limits::downlevel_defaults()` for broader hardware support, or `Limits::downlevel_webgl2_defaults()` when targeting WebGL2.
+
+---
+
+## Usage Example
+
+```rust
+let adapter = instance
+    .request_adapter(&wgpu::RequestAdapterOptions::default())
+    .await
+    .unwrap();
+
+let info = adapter.get_info();
+println!("Using {} ({:?})", info.name, info.backend);
+
+let supported = adapter.features();
+let required = wgpu::Features::TIMESTAMP_QUERY | wgpu::Features::TEXTURE_COMPRESSION_BC;
+assert!(supported.contains(required), "required features not available");
+
+let (device, queue) = adapter
+    .request_device(&wgpu::DeviceDescriptor {
+        label: None,
+        required_features: required,
+        required_limits: wgpu::Limits::default(),
+        memory_hints: wgpu::MemoryHints::default(),
+    })
+    .await
+    .unwrap();
+```
+
+<CardGroup cols={2}>
+  <Card title="Instance" href="/api/instance">
+    Create an instance and request adapters
+  </Card>
+  <Card title="Device & Queue" href="/api/device-queue">
+    Open a device and submit GPU work
+  </Card>
+</CardGroup>

@@ -1,23 +1,11 @@
 {
-  "$schema": "https://mintlify.com/docs.json",
-  "name": "wgpu",
+  "projectType": "sdk-library",
+  "projectName": "wgpu",
+  "projectDescription": "A cross-platform, safe, pure-Rust graphics API based on the WebGPU standard, running natively on Vulkan, Metal, D3D12, and OpenGL.",
   "theme": "aspen",
-  "colors": {
-    "primary": "#3D7ECC",
-    "light": "#6EB0FF",
-    "dark": "#1A3F6F"
-  },
-  "navbar": {
-    "primary": {
-      "type": "github",
-      "href": "https://github.com/gfx-rs/wgpu"
-    }
-  },
-  "footer": {
-    "socials": {
-      "github": "https://github.com/gfx-rs/wgpu"
-    }
-  },
+  "primaryColor": "#3D7ECC",
+  "lightColor": "#6EB0FF",
+  "darkColor": "#1A3F6F",
   "navigation": {
     "tabs": [
       {
@@ -97,5 +85,42 @@
         ]
       }
     ]
-  }
+  },
+  "keyFeatures": [
+    "Cross-platform graphics API supporting Vulkan, Metal, D3D12, OpenGL, WebGL2, and WebGPU",
+    "Safe, pure-Rust implementation with no unsafe code at the user level",
+    "WebGPU-based API design, serving as the backend for Firefox, Servo, and Deno",
+    "Naga shader translator supporting WGSL, SPIR-V, and GLSL input",
+    "WebAssembly support for running in browsers via WebGPU or WebGL2",
+    "Experimental ray tracing and mesh shader extensions",
+    "Comprehensive validation and error reporting through wgpu-core",
+    "no_std support with optional parking_lot for embedded/constrained environments"
+  ],
+  "publicApiSurface": [
+    "Instance",
+    "Adapter",
+    "Device",
+    "Queue",
+    "Surface",
+    "Buffer",
+    "Texture",
+    "TextureView",
+    "Sampler",
+    "BindGroup",
+    "BindGroupLayout",
+    "PipelineLayout",
+    "RenderPipeline",
+    "ComputePipeline",
+    "CommandEncoder",
+    "RenderPass",
+    "ComputePass",
+    "ShaderModule",
+    "QuerySet",
+    "Blas",
+    "Tlas",
+    "Features",
+    "Limits",
+    "TextureFormat",
+    "VertexFormat"
+  ]
 }

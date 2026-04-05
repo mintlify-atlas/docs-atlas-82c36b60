@@ -1,0 +1,154 @@
+---
+title: "Platform support"
+description: "Platform-specific notes and configuration for each backend"
+---
+
+wgpu runs natively on Vulkan, Metal, D3D12, and OpenGL, and on top of WebGL2 and WebGPU in browsers.
+
+## Support matrix
+
+| Backend | Windows | Linux | macOS | iOS | Android | Web |
+|---------|---------|-------|-------|-----|---------|-----|
+| Vulkan  | ✅ | ✅ | 🌋 | | ✅ | |
+| Metal   | | | ✅ | ✅ | | |
+| D3D12   | ✅ | | | | | |
+| OpenGL  | 🆗 | 🆗 | 📐 | | 🆗 | 🆗 WebGL2 |
+| WebGPU  | | | | | | ✅ |
+
+✅ First-class support &nbsp;|&nbsp; 🆗 Downlevel/best-effort &nbsp;|&nbsp; 🌋 Requires MoltenVK &nbsp;|&nbsp; 📐 Requires ANGLE
+
+The default feature set enables Vulkan, Metal, D3D12, OpenGL, WebGPU, and WGSL on applicable platforms.
+
+## Vulkan
+
+Enabled by the `vulkan` Cargo feature (default on Windows, Linux, Android).
+
+```toml
+wgpu = { version = "29", features = ["vulkan"] }
+```
+
+On macOS and iOS, Vulkan is not natively available. Use the `vulkan-portability` feature with [MoltenVK](https://vulkan.lunarg.com/sdk/home#mac):
+
+```toml
+wgpu = { version = "29", features = ["vulkan", "vulkan-portability"] }
+```
+
+Install MoltenVK via the Vulkan SDK or Homebrew (`brew install molten-vk`), then:
+
+```bash
+WGPU_BACKEND=vulkan cargo run
+```
+
+<Note>
+  `vulkan-portability` enables the `VK_KHR_portability_subset` extension required on Apple hardware. Without it, instance creation fails on macOS.
+</Note>
+
+## Metal
+
+Enabled by the `metal` Cargo feature (default on Apple targets).
+
+```toml
+wgpu = { version = "29", features = ["metal"] }
+```
+
+Works on macOS 10.13+ and iOS 16+. No extra setup required — Metal ships with the OS and is the recommended target for all Apple platforms.
+
+```bash
+WGPU_BACKEND=metal cargo run
+```
+
+## D3D12
+
+Enabled by the `dx12` Cargo feature (default on Windows).
+
+```toml
+wgpu = { version = "29", features = ["dx12"] }
+```
+
+Available on Windows 10+. Select the shader compiler at runtime:
+
+```bash
+WGPU_DX12_COMPILER=dxc   # modern compiler, better error messages
+WGPU_DX12_COMPILER=fxc   # legacy compiler, ships with Windows
+```
+
+`dxc` requires `dxcompiler.dll` (min v1.8.2502) in the working directory. To avoid shipping the DLL, link DXC statically:
+
+```toml
+wgpu = { version = "29", features = ["dx12", "static-dxc"] }
+```
+
+## OpenGL / GLES
+
+Enabled by the `gles` Cargo feature (default).
+
+```toml
+wgpu = { version = "29", features = ["gles"] }
+```
+
+Requires OpenGL 3.3+ on desktop or OpenGL ES 3.0+ on mobile.
+
+**macOS**: Native OpenGL is deprecated. Use the `angle` feature to target ANGLE (OpenGL ES via Metal):
+
+```toml
+wgpu = { version = "29", features = ["gles", "angle"] }
+```
+
+**Web (WebGL2)**: Enable the `webgl` feature for `wasm32` targets:
+
+```toml
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wgpu = { version = "29", default-features = false, features = ["wgsl", "std", "webgl"] }
+```
+
+See [WebAssembly & web](/guides/wasm-web) for full build instructions.
+
+<Warning>
+  The OpenGL backend is downlevel. Compute shaders, storage buffers, and several wgpu features may be unavailable. Check `adapter.get_downlevel_capabilities()` before relying on them.
+</Warning>
+
+## WebGPU
+
+Enabled by the `webgpu` Cargo feature (default, WASM-only).
+
+```toml
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wgpu = { version = "29", features = ["webgpu"] }
+```
+
+Calls the browser's native WebGPU API. WGSL shaders pass through unchanged. Requires Chrome 113+, Edge 113+, or Safari 18+. See [WebAssembly & web](/guides/wasm-web) for setup details.
+
+## Downlevel capabilities
+
+On OpenGL and some mobile GPUs, certain features are not guaranteed. Query availability at runtime:
+
+```rust
+let caps = adapter.get_downlevel_capabilities();
+
+if !caps.flags.contains(wgpu::DownlevelFlags::COMPUTE_SHADERS) {
+    eprintln!("Compute shaders not supported on this adapter");
+}
+```
+
+Common flags to check:
+
+| Flag | What it guards |
+|------|---------------|
+| `COMPUTE_SHADERS` | Any compute pipeline |
+| `VERTEX_STORAGE` | Storage buffers in vertex shaders |
+| `FRAGMENT_WRITABLE_STORAGE` | Writable storage in fragment shaders |
+| `INDIRECT_EXECUTION` | `draw_indirect`, `dispatch_indirect` |
+| `NON_POWER_OF_TWO_MIPMAPPED_TEXTURES` | Mip-mapped NPOT textures |
+
+Use `Limits::downlevel_defaults()` when targeting downlevel hardware, and `Limits::downlevel_webgl2_defaults()` for the most conservative WebGL2-compatible limits.
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Debugging" href="/guides/debugging">
+    Select backends, inspect adapters, and use GPU debuggers
+  </Card>
+  <Card title="WebAssembly & web" href="/guides/wasm-web">
+    WebGPU and WebGL2 backends for browser targets
+  </Card>
+</CardGroup>

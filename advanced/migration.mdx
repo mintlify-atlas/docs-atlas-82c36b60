@@ -1,0 +1,137 @@
+---
+title: "Migration guide"
+description: "Upgrading between major wgpu versions"
+---
+
+wgpu follows semantic versioning. Breaking changes are listed in [CHANGELOG.md](https://github.com/gfx-rs/wgpu/blob/trunk/CHANGELOG.md). After bumping the version in `Cargo.toml`, run `cargo check` to surface compile errors from API changes.
+
+<Tip>
+Check the [GitHub releases page](https://github.com/gfx-rs/wgpu/releases) and CHANGELOG.md for the full list of changes in each release.
+</Tip>
+
+## v28 → v29
+
+### `get_current_texture` returns an enum
+
+`Surface::get_current_texture` no longer returns `Result<SurfaceTexture, SurfaceError>`. It now returns `CurrentSurfaceTexture`:
+
+```rust
+// Before (v28)
+let frame = surface.get_current_texture().unwrap();
+
+// After (v29)
+match surface.get_current_texture() {
+    wgpu::CurrentSurfaceTexture::Success(frame) => {
+        // render normally
+    }
+    wgpu::CurrentSurfaceTexture::Timeout
+    | wgpu::CurrentSurfaceTexture::Occluded => {
+        return; // skip frame
+    }
+    wgpu::CurrentSurfaceTexture::Outdated
+    | wgpu::CurrentSurfaceTexture::Suboptimal(frame) => {
+        surface.configure(&device, &config); // reconfigure
+    }
+    wgpu::CurrentSurfaceTexture::Lost => {
+        surface.configure(&device, &config); // reconfigure or recreate
+    }
+    wgpu::CurrentSurfaceTexture::Validation => {
+        // validation error — check error handler
+    }
+}
+```
+
+### `InstanceDescriptor` constructors changed
+
+`InstanceDescriptor::default()` and `from_env_or_default()` are removed. Use the new explicit constructors:
+
+```rust
+// Without a window (headless / compute only)
+wgpu::InstanceDescriptor::new_without_display_handle()
+wgpu::InstanceDescriptor::new_without_display_handle_from_env()
+
+// With a winit event loop display handle
+wgpu::InstanceDescriptor::new_with_display_handle(
+    Box::new(event_loop.owned_display_handle())
+)
+```
+
+### `PipelineLayoutDescriptor.bind_group_layouts` now `&[Option<&BindGroupLayout>]`
+
+```rust
+// Before (v28)
+bind_group_layouts: &[&bgl],
+
+// After (v29)
+bind_group_layouts: &[Some(&bgl)],
+```
+
+### `DepthStencilState` fields are now `Option`
+
+```rust
+// Before (v28)
+depth_write_enabled: true,
+depth_compare: wgpu::CompareFunction::Less,
+
+// After (v29)
+depth_write_enabled: Some(true),
+depth_compare: Some(wgpu::CompareFunction::Less),
+
+// For stencil-only (no depth):
+depth_write_enabled: None,
+depth_compare: None,
+```
+
+### `MapMode::Write` uses `WriteOnly<[u8]>`
+
+`get_mapped_range_mut()` now returns `WriteOnly<[u8]>` instead of `&mut [u8]`. Simple copy_from_slice usage still works:
+
+```rust
+// Still works in v29
+view.copy_from_slice(&my_data);
+
+// Slicing changed
+// Before: &mut view[start..end]
+// After: view.slice(start..end)
+```
+
+### MSRV changed to 1.87
+
+v29 lowered the MSRV from 1.92 (v28) to **1.87**. Update your `rust-version` in `Cargo.toml` accordingly.
+
+### Other v29 changes
+
+- `Features::CLIP_DISTANCE` renamed to `Features::CLIP_DISTANCES` (pluralized, matches WebGPU spec)
+- `FeatureLevel` and `ShaderModel` DX12 enum variants now prefixed with `V` instead of `_`
+- D3D12 Agility SDK support via `Dx12BackendOptions`
+
+---
+
+## v27 → v28
+
+Refer to the [v28 CHANGELOG](https://github.com/gfx-rs/wgpu/blob/trunk/CHANGELOG.md#v2800-2025-12-17) for the full list. Key changes include MSRV bump to 1.92 and various HAL API refinements.
+
+---
+
+## General migration tips
+
+<AccordionGroup>
+  <Accordion title="Use cargo check after version bump">
+    Run `cargo check` immediately after updating `wgpu` in `Cargo.toml`. Rust's type system surfaces most breaking API changes as compile errors with helpful messages.
+  </Accordion>
+  <Accordion title="Check feature flags">
+    New versions sometimes add or rename Cargo features. Review the `[features]` section of `wgpu/Cargo.toml` for your target version.
+  </Accordion>
+  <Accordion title="Downlevel targets may behave differently">
+    If you support OpenGL or WebGL2, test on those backends after upgrading — changes to validation or format support may affect downlevel targets differently than primary backends.
+  </Accordion>
+</AccordionGroup>
+
+<CardGroup cols={2}>
+  <Card title="Changelog" icon="clock-rotate-left" href="https://github.com/gfx-rs/wgpu/blob/trunk/CHANGELOG.md">
+    Full release history and breaking changes.
+  </Card>
+  <Card title="Platform support" icon="globe" href="/guides/platform-support">
+    Per-backend feature availability.
+  </Card>
+</CardGroup>

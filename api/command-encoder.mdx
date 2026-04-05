@@ -1,0 +1,127 @@
+---
+title: "Command encoder"
+description: "Record GPU commands for rendering, compute, and data transfer"
+---
+
+A `CommandEncoder` records GPU commands without executing them. When you call `encoder.finish()`, you get a `CommandBuffer` that can be submitted to a `Queue`.
+
+## Creating an encoder
+
+```rust
+let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+    label: Some("encoder"),
+});
+```
+
+## Render pass
+
+A render pass records draw calls. The pass borrows the encoder mutably, so drop it before recording more commands.
+
+```rust
+{
+    let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+        label: Some("rpass"),
+        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+            view: &surface_view,
+            resolve_target: None,
+            ops: wgpu::Operations {
+                load: wgpu::LoadOp::Clear(wgpu::Color { r: 0.1, g: 0.1, b: 0.1, a: 1.0 }),
+                store: wgpu::StoreOp::Store,
+            },
+        })],
+        depth_stencil_attachment: None,
+        timestamp_writes: None,
+        occlusion_query_set: None,
+    });
+
+    rpass.set_pipeline(&render_pipeline);
+    rpass.set_bind_group(0, &bind_group, &[]);
+    rpass.set_vertex_buffer(0, vertex_buffer.slice(..));
+    rpass.set_index_buffer(index_buffer.slice(..), wgpu::IndexFormat::Uint16);
+    rpass.draw_indexed(0..index_count, 0, 0..1);
+} // pass dropped here — encoder reclaimed
+```
+
+### Render pass commands
+
+| Method | Description |
+|--------|-------------|
+| `set_pipeline(&pipeline)` | Set the active render pipeline |
+| `set_bind_group(index, bg, offsets)` | Bind resources at a group index |
+| `set_vertex_buffer(slot, slice)` | Bind a vertex buffer |
+| `set_index_buffer(slice, format)` | Bind an index buffer |
+| `draw(vertices, instances)` | Non-indexed draw |
+| `draw_indexed(indices, base_vertex, instances)` | Indexed draw |
+| `draw_indirect(buffer, offset)` | GPU-driven non-indexed draw |
+| `draw_indexed_indirect(buffer, offset)` | GPU-driven indexed draw |
+| `set_viewport(x, y, w, h, min_d, max_d)` | Set viewport |
+| `set_scissor_rect(x, y, w, h)` | Set scissor rectangle |
+| `set_blend_constant(color)` | Set blend constant |
+
+## Compute pass
+
+```rust
+{
+    let mut cpass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+        label: Some("cpass"),
+        timestamp_writes: None,
+    });
+
+    cpass.set_pipeline(&compute_pipeline);
+    cpass.set_bind_group(0, &bind_group, &[]);
+    cpass.dispatch_workgroups(workgroup_count_x, 1, 1);
+}
+```
+
+| Method | Description |
+|--------|-------------|
+| `set_pipeline(&pipeline)` | Set the active compute pipeline |
+| `set_bind_group(index, bg, offsets)` | Bind resources |
+| `dispatch_workgroups(x, y, z)` | Launch workgroups |
+| `dispatch_workgroups_indirect(buffer, offset)` | GPU-driven dispatch |
+
+## Buffer and texture copies
+
+These commands are recorded on the encoder directly (outside a pass):
+
+```rust
+// Copy between buffers
+encoder.copy_buffer_to_buffer(&src_buf, 0, &dst_buf, 0, size);
+
+// Copy texture to buffer (for CPU readback)
+encoder.copy_texture_to_buffer(
+    src_texture.as_image_copy(),
+    wgpu::TexelCopyBufferInfo {
+        buffer: &staging_buffer,
+        layout: wgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(bytes_per_row),
+            rows_per_image: Some(height),
+        },
+    },
+    texture_size,
+);
+
+// Copy buffer to texture (upload)
+encoder.copy_buffer_to_texture(src_info, dst_texture.as_image_copy(), size);
+```
+
+## Submitting commands
+
+```rust
+let command_buffer = encoder.finish();
+queue.submit([command_buffer]);
+```
+
+<Tip>
+You can submit multiple command buffers in one call: `queue.submit([cb1, cb2, cb3])`. They execute in order.
+</Tip>
+
+<CardGroup cols={2}>
+  <Card title="Pipelines" icon="microchip" href="/api/pipelines">
+    Render and compute pipelines.
+  </Card>
+  <Card title="Buffers" icon="database" href="/api/buffers">
+    GPU memory resources.
+  </Card>
+</CardGroup>

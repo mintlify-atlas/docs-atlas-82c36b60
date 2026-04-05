@@ -1,0 +1,117 @@
+---
+title: "Bind groups"
+description: "Resource bindings that connect GPU buffers and textures to shaders"
+---
+
+A `BindGroup` connects GPU resources (buffers, textures, samplers) to the bindings declared in a shader. A `BindGroupLayout` describes the expected resource types — think of it as a typed interface declaration.
+
+## Bind group layout
+
+```rust
+let bind_group_layout = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+    label: Some("bgl"),
+    entries: &[
+        // @group(0) @binding(0) var<uniform> params: Params;
+        wgpu::BindGroupLayoutEntry {
+            binding: 0,
+            visibility: wgpu::ShaderStages::VERTEX | wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Uniform,
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
+        },
+        // @group(0) @binding(1) var t: texture_2d<f32>;
+        wgpu::BindGroupLayoutEntry {
+            binding: 1,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Texture {
+                sample_type: wgpu::TextureSampleType::Float { filterable: true },
+                view_dimension: wgpu::TextureViewDimension::D2,
+                multisampled: false,
+            },
+            count: None,
+        },
+        // @group(0) @binding(2) var s: sampler;
+        wgpu::BindGroupLayoutEntry {
+            binding: 2,
+            visibility: wgpu::ShaderStages::FRAGMENT,
+            ty: wgpu::BindingType::Sampler(wgpu::SamplerBindingType::Filtering),
+            count: None,
+        },
+    ],
+});
+```
+
+## Binding types
+
+| `BindingType` | WGSL declaration | Notes |
+|---------------|------------------|-------|
+| `Buffer { ty: Uniform, .. }` | `var<uniform>` | Read-only uniform data |
+| `Buffer { ty: Storage { read_only: true }, .. }` | `var<storage, read>` | Read-only storage |
+| `Buffer { ty: Storage { read_only: false }, .. }` | `var<storage, read_write>` | Read-write storage |
+| `Texture { .. }` | `var t: texture_2d<f32>` | Sampled texture |
+| `StorageTexture { .. }` | `var t: texture_storage_2d<..>` | Storage texture |
+| `Sampler(..)` | `var s: sampler` | Texture sampler |
+
+## Shader stages visibility
+
+| `ShaderStages` | Value |
+|----------------|-------|
+| `VERTEX` | Vertex shader only |
+| `FRAGMENT` | Fragment shader only |
+| `COMPUTE` | Compute shader only |
+| `VERTEX_FRAGMENT` | Both vertex and fragment |
+
+## Creating a bind group
+
+A `BindGroup` must match the layout exactly:
+
+```rust
+let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+    label: Some("bg"),
+    layout: &bind_group_layout,
+    entries: &[
+        wgpu::BindGroupEntry {
+            binding: 0,
+            resource: uniform_buffer.as_entire_binding(),
+        },
+        wgpu::BindGroupEntry {
+            binding: 1,
+            resource: wgpu::BindingResource::TextureView(&texture_view),
+        },
+        wgpu::BindGroupEntry {
+            binding: 2,
+            resource: wgpu::BindingResource::Sampler(&sampler),
+        },
+    ],
+});
+```
+
+## Setting a bind group in a pass
+
+```rust
+// In a render pass or compute pass:
+pass.set_bind_group(0, &bind_group, &[]);
+//                  ↑ group index matches @group(0) in WGSL
+```
+
+For dynamic offsets (dynamic uniform buffers):
+
+```rust
+pass.set_bind_group(0, &bind_group, &[offset_in_bytes]);
+```
+
+<Note>
+Reuse `BindGroupLayout` objects across pipelines that share the same resource layout. Creating fewer layouts allows wgpu to share GPU descriptor sets.
+</Note>
+
+<CardGroup cols={2}>
+  <Card title="Pipelines" icon="microchip" href="/api/pipelines">
+    Create pipelines using a layout.
+  </Card>
+  <Card title="Command encoder" icon="terminal" href="/api/command-encoder">
+    Set bind groups in passes.
+  </Card>
+</CardGroup>

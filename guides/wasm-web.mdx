@@ -1,0 +1,183 @@
+---
+title: "WebAssembly & web"
+description: "Compile wgpu to WebAssembly and run in a browser"
+---
+
+wgpu supports two WASM backends. Choose based on your browser support requirements.
+
+<Tabs>
+  <Tab title="WebGPU (recommended)">
+    The `webgpu` feature calls the browser's native WebGPU API directly. WGSL shaders pass through unchanged. Requires Chrome 113+, Edge 113+, or Safari 18+.
+
+    This is the default when targeting `wasm32-unknown-unknown` — no extra feature flags needed.
+  </Tab>
+  <Tab title="WebGL2 (wider compatibility)">
+    The `webgl` feature runs wgpu-core on WASM and uses Naga to translate WGSL → GLSL before calling WebGL2. Works in all modern browsers including pre-Chrome 113.
+
+    Compute shaders, storage buffers, and several other features are limited or unavailable. Check `adapter.get_downlevel_capabilities()` before relying on them.
+  </Tab>
+</Tabs>
+
+## Cargo.toml
+
+<Tabs>
+  <Tab title="WebGPU">
+    ```toml
+    [dependencies]
+    wgpu = "29"
+
+    [target.'cfg(target_arch = "wasm32")'.dependencies]
+    wasm-bindgen = "0.2"
+    wasm-bindgen-futures = "0.4"
+    web-sys = { version = "0.3", features = ["HtmlCanvasElement"] }
+    console_error_panic_hook = "0.1"
+    console_log = "1"
+    ```
+
+    The `webgpu` feature is included in wgpu's defaults, so no feature flags are required.
+  </Tab>
+  <Tab title="WebGL2">
+    ```toml
+    [dependencies]
+    wgpu = { version = "29", default-features = false, features = ["wgsl", "std", "webgl"] }
+
+    [target.'cfg(target_arch = "wasm32")'.dependencies]
+    wasm-bindgen = "0.2"
+    wasm-bindgen-futures = "0.4"
+    web-sys = { version = "0.3", features = ["HtmlCanvasElement"] }
+    console_error_panic_hook = "0.1"
+    console_log = "1"
+    ```
+
+    Disabling default features avoids pulling in the WebGPU backend alongside WebGL2.
+  </Tab>
+</Tabs>
+
+## Get a canvas and create a Surface
+
+On WASM, a wgpu `Surface` is backed by an `HtmlCanvasElement`. Obtain it from the DOM:
+
+```rust
+#[cfg(target_arch = "wasm32")]
+{
+    use wasm_bindgen::JsCast;
+    use winit::platform::web::WindowAttributesExtWebSys;
+
+    let canvas = web_sys::window()
+        .unwrap()
+        .document()
+        .unwrap()
+        .get_element_by_id("canvas")
+        .unwrap()
+        .dyn_into::<web_sys::HtmlCanvasElement>()
+        .unwrap();
+
+    attributes = attributes.with_canvas(Some(canvas));
+}
+```
+
+Add a matching canvas element to your HTML:
+
+```html
+<canvas id="canvas" width="800" height="600"></canvas>
+```
+
+## Async: use `spawn_local` instead of `block_on`
+
+The browser controls the event loop — blocking is not allowed on WASM. Use `wasm_bindgen_futures::spawn_local` in place of `pollster::block_on`:
+
+```rust
+#[cfg(not(target_arch = "wasm32"))]
+fn spawn(f: impl Future<Output = ()> + 'static) {
+    pollster::block_on(f);
+}
+
+#[cfg(target_arch = "wasm32")]
+fn spawn(f: impl Future<Output = ()> + 'static) {
+    wasm_bindgen_futures::spawn_local(f);
+}
+```
+
+Also replace `EventLoop::run_app` with `EventLoopExtWebSys::spawn_app` on WASM:
+
+```rust
+cfg_if::cfg_if! {
+    if #[cfg(target_arch = "wasm32")] {
+        use winit::platform::web::EventLoopExtWebSys;
+        event_loop.spawn_app(app);
+    } else {
+        event_loop.run_app(&mut app).unwrap();
+    }
+}
+```
+
+## Panic and logging setup
+
+Route Rust panics and log output to the browser console before doing anything else:
+
+```rust
+#[cfg(target_arch = "wasm32")]
+{
+    std::panic::set_hook(Box::new(console_error_panic_hook::hook));
+    console_log::init().expect("could not initialize logger");
+}
+```
+
+Without `console_error_panic_hook`, panics produce a cryptic "unreachable executed" message in DevTools.
+
+## Build commands
+
+<Tabs>
+  <Tab title="trunk">
+    [Trunk](https://trunkrs.dev) is the easiest option for development:
+
+    ```bash
+    cargo install trunk
+
+    # WebGPU (default)
+    trunk serve
+
+    # WebGL2
+    trunk serve --features webgl
+    ```
+  </Tab>
+  <Tab title="wasm-pack">
+    [wasm-pack](https://rustwasm.github.io/wasm-pack/) builds an npm-compatible package:
+
+    ```bash
+    cargo install wasm-pack
+
+    # For use without a bundler
+    wasm-pack build --target web
+
+    # For webpack / vite
+    wasm-pack build --target bundler
+    ```
+
+    Annotate your entry point with `#[wasm_bindgen(start)]`.
+  </Tab>
+</Tabs>
+
+## Browser support
+
+| Browser | WebGPU |
+|---------|--------|
+| Chrome 113+ | Yes (desktop & Android) |
+| Edge 113+ | Yes |
+| Safari 18+ | Yes (macOS & iOS) |
+| Firefox Nightly | Behind flag |
+
+<Note>
+  On Linux, Chrome may require `--enable-features=Vulkan` depending on your display server and GPU driver.
+</Note>
+
+## Next steps
+
+<CardGroup cols={2}>
+  <Card title="Render your first triangle" href="/guides/first-triangle">
+    Full render pipeline example with WASM support
+  </Card>
+  <Card title="Platform support" href="/guides/platform-support">
+    WebGPU and WebGL2 backend details and limitations
+  </Card>
+</CardGroup>

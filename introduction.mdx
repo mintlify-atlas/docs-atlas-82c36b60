@@ -1,0 +1,71 @@
+---
+title: "Introduction"
+description: "What wgpu is, how it works, and when to use it"
+---
+
+wgpu is a cross-platform, safe, pure-Rust graphics API based on the [WebGPU standard](https://gpuweb.github.io/gpuweb/). It runs natively on Vulkan, Metal, D3D12, and OpenGL, and in browsers via WebGPU or WebGL2 on WebAssembly. It serves as the core of the WebGPU integration in Firefox, Servo, and Deno.
+
+## Architecture
+
+wgpu is structured as a layered stack:
+
+```
+Your application
+     ↓
+wgpu          ← safe Rust API (this crate)
+     ↓
+wgpu-core     ← validation, resource tracking, WebGPU compliance
+     ↓
+wgpu-hal      ← unsafe hardware abstraction layer
+     ↓
+Vulkan / Metal / D3D12 / OpenGL / WebGPU
+```
+
+**Key components:**
+- **`wgpu`** — the safe public API you program against
+- **`wgpu-core`** — implements WebGPU validation and resource management
+- **`wgpu-hal`** — thin unsafe abstraction over native GPU APIs
+- **`naga`** — shader translator: reads WGSL/GLSL/SPIR-V, writes HLSL/MSL/GLSL/SPIR-V
+
+## Core types
+
+| Type | Description |
+|------|-------------|
+| `Instance` | Entry point — enumerate adapters and create surfaces |
+| `Adapter` | A physical GPU or software renderer |
+| `Device` | Open logical connection to a GPU — creates all resources |
+| `Queue` | Submit command buffers to the GPU |
+| `Surface` | The window or canvas to render to |
+
+## Supported platforms
+
+| Backend | Windows | Linux/Android | macOS/iOS | Web (wasm) |
+|---------|---------|---------------|-----------|------------|
+| Vulkan  | ✅      | ✅            | 🌋        |            |
+| Metal   |         |               | ✅        |            |
+| D3D12   | ✅      |               |           |            |
+| OpenGL  | 🆗      | 🆗            | 📐        | 🆗 (WebGL2)|
+| WebGPU  |         |               |           | ✅         |
+
+✅ First-class · 🆗 Best-effort · 📐 Requires ANGLE · 🌋 Requires MoltenVK
+
+## MSRV
+
+The `wgpu` crate requires Rust **1.87** or later. Tests and examples require **1.93**.
+
+## Where to go next
+
+<Columns cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Write your first GPU compute program in minutes.
+  </Card>
+  <Card title="Installation" icon="box" href="/installation">
+    Add wgpu to your Cargo project and configure features.
+  </Card>
+  <Card title="Core Concepts" icon="layer-group" href="/concepts/instance-adapter-device">
+    Understand the Instance → Adapter → Device → Queue pipeline.
+  </Card>
+  <Card title="API Reference" icon="code" href="/api/instance">
+    Browse every public type and method.
+  </Card>
+</Columns>

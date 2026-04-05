@@ -1,0 +1,226 @@
+---
+title: "Instance"
+description: "The entry point for all wgpu operations — enumerate adapters and create surfaces"
+---
+
+`Instance` is the first object you create when using wgpu. It connects your application to the GPU driver stack and is the starting point for obtaining [`Adapter`](/api/adapter)s and creating surfaces for rendering to windows.
+
+An `Instance` does not need to be kept alive after you have created the adapters and surfaces you need.
+
+## Creating an Instance
+
+### `Instance::new`
+
+```rust
+pub fn new(desc: InstanceDescriptor) -> Self
+```
+
+Creates a new `Instance` with the given options. Panics if no backend feature for the current platform is enabled.
+
+```rust
+let instance = wgpu::Instance::new(wgpu::InstanceDescriptor {
+    backends: wgpu::Backends::PRIMARY,
+    ..wgpu::InstanceDescriptor::new_without_display_handle()
+});
+```
+
+### `Instance::default`
+
+```rust
+impl Default for Instance
+```
+
+Creates a new instance with `Backends::all()` enabled. Panics on the same conditions as `Instance::new`.
+
+---
+
+## Methods
+
+### `request_adapter`
+
+```rust
+pub fn request_adapter(
+    &self,
+    options: &RequestAdapterOptions<'_, '_>,
+) -> impl Future<Output = Result<Adapter, RequestAdapterError>>
+```
+
+Requests an [`Adapter`](/api/adapter) matching the given options. Some options are treated as soft preferences (e.g. `power_preference`) while others are hard requirements (e.g. `compatible_surface`).
+
+<Note>
+When targeting WebGL2, a `compatible_surface` must always be provided. Using `RequestAdapterOptions::default()` will fail.
+</Note>
+
+```rust
+let adapter = instance
+    .request_adapter(&wgpu::RequestAdapterOptions {
+        power_preference: wgpu::PowerPreference::HighPerformance,
+        compatible_surface: Some(&surface),
+        force_fallback_adapter: false,
+        apply_limit_buckets: false,
+    })
+    .await
+    .expect("no suitable adapter found");
+```
+
+### `enumerate_adapters`
+
+```rust
+pub fn enumerate_adapters(
+    &self,
+    backends: Backends,
+) -> impl Future<Output = Vec<Adapter>>
+```
+
+Returns all available adapters matching the given backend filter. Useful when you want to pick an adapter yourself rather than using `request_adapter`.
+
+```rust
+let adapters = instance.enumerate_adapters(wgpu::Backends::VULKAN).await;
+for adapter in adapters {
+    println!("{:?}", adapter.get_info());
+}
+```
+
+### `create_surface`
+
+```rust
+pub fn create_surface<'window>(
+    &self,
+    target: impl Into<SurfaceTarget<'window>>,
+) -> Result<Surface<'window>, CreateSurfaceError>
+```
+
+Creates a rendering surface backed by the given window or canvas. Accepts any type implementing `raw-window-handle`'s `HasWindowHandle` and `HasDisplayHandle` traits (e.g. a `winit` window).
+
+```rust
+let surface = instance.create_surface(&window)?;
+```
+
+### `enabled_backend_features`
+
+```rust
+pub const fn enabled_backend_features() -> Backends
+```
+
+Returns the set of backends that are compiled in for the current build target. This is a compile-time check only; it does not probe hardware.
+
+### `poll_all`
+
+```rust
+pub fn poll_all(&self, force_wait: bool) -> bool
+```
+
+Polls all devices associated with this instance. If `force_wait` is `true`, blocks until all in-flight operations are complete. Returns `true` if all device queues are empty. On the web this is a no-op.
+
+---
+
+## Key Types
+
+### `InstanceDescriptor`
+
+Passed to `Instance::new` to configure the instance.
+
+<ParamField path="backends" type="Backends" required>
+  Which backends to attempt to use. Defaults to `Backends::all()` when using `InstanceDescriptor::default()`.
+</ParamField>
+
+<ParamField path="flags" type="InstanceFlags">
+  Debugging and validation flags. In debug builds these default to `InstanceFlags::debugging()` (validation + debug labels). In release builds only `VALIDATION_INDIRECT_CALL` is set.
+</ParamField>
+
+<ParamField path="backend_options" type="BackendOptions">
+  Per-backend configuration such as the DX12 shader compiler choice.
+</ParamField>
+
+<ParamField path="display" type="Option&lt;Box&lt;dyn WgpuHasDisplayHandle&gt;&gt;">
+  Optional platform display handle (e.g. `winit`'s `OwnedDisplayHandle`). Required on GLES/Wayland when presenting to a surface.
+</ParamField>
+
+Use `InstanceDescriptor::new_without_display_handle()` as a starting point:
+
+```rust
+let desc = wgpu::InstanceDescriptor {
+    backends: wgpu::Backends::PRIMARY,
+    flags: wgpu::InstanceFlags::debugging(),
+    ..wgpu::InstanceDescriptor::new_without_display_handle()
+};
+```
+
+### `RequestAdapterOptions`
+
+<ParamField path="power_preference" type="PowerPreference">
+  Soft hint for adapter selection. Defaults to `PowerPreference::None`.
+</ParamField>
+
+<ParamField path="compatible_surface" type="Option&lt;&amp;Surface&gt;">
+  If set, only adapters that can present to this surface are considered. Required for WebGL2.
+</ParamField>
+
+<ParamField path="force_fallback_adapter" type="bool">
+  If `true`, only a software/fallback adapter is returned.
+</ParamField>
+
+<ParamField path="apply_limit_buckets" type="bool">
+  If `true`, the adapter's reported limits are quantized to pre-defined buckets to reduce fingerprinting surface. Recommended for browser-like environments.
+</ParamField>
+
+### `PowerPreference`
+
+| Variant | Description |
+|---------|-------------|
+| `None` | No preference (default) |
+| `LowPower` | Prefer integrated / low-power GPU |
+| `HighPerformance` | Prefer discrete / high-performance GPU |
+
+### `Backends`
+
+A bitflags set of backend APIs to enable.
+
+| Flag | Description |
+|------|-------------|
+| `VULKAN` | Vulkan (Windows, Linux, Android) |
+| `METAL` | Metal (macOS, iOS) |
+| `DX12` | Direct3D 12 (Windows) |
+| `GL` | OpenGL ES / WebGL2 |
+| `BROWSER_WEBGPU` | WebGPU (browser) |
+| `PRIMARY` | `VULKAN \| METAL \| DX12 \| BROWSER_WEBGPU` |
+| `SECONDARY` | `GL` |
+| `all()` | All backends |
+
+---
+
+## Usage Example
+
+```rust
+async fn init(window: &winit::window::Window) -> (wgpu::Device, wgpu::Queue) {
+    let instance = wgpu::Instance::new(
+        wgpu::InstanceDescriptor::new_without_display_handle()
+    );
+
+    let surface = instance.create_surface(window).unwrap();
+
+    let adapter = instance
+        .request_adapter(&wgpu::RequestAdapterOptions {
+            power_preference: wgpu::PowerPreference::HighPerformance,
+            compatible_surface: Some(&surface),
+            force_fallback_adapter: false,
+            apply_limit_buckets: false,
+        })
+        .await
+        .expect("no adapter found");
+
+    adapter
+        .request_device(&wgpu::DeviceDescriptor::default())
+        .await
+        .expect("failed to open device")
+}
+```
+
+<CardGroup cols={2}>
+  <Card title="Adapter" href="/api/adapter">
+    Inspect GPU capabilities and open a device
+  </Card>
+  <Card title="Device & Queue" href="/api/device-queue">
+    Create GPU resources and submit work
+  </Card>
+</CardGroup>

@@ -1,0 +1,125 @@
+---
+title: "Surfaces & rendering"
+description: "Render to a window or canvas using a Surface"
+---
+
+A `Surface` represents the platform window or canvas that wgpu presents rendered frames to. It requires the `raw-window-handle` crate and a configured `Device`.
+
+## Creating a Surface
+
+Pass anything that implements `HasWindowHandle` to `instance.create_surface`. Most window libraries (winit, SDL2, etc.) implement this trait automatically:
+
+```rust
+let surface = instance.create_surface(window).expect("failed to create surface");
+```
+
+`Surface<'window>` borrows the window via a lifetime parameter. Passing an `Arc<Window>` yields a `Surface<'static>`, which is the most ergonomic choice for typical application structures.
+
+---
+
+## Configuring a Surface
+
+Before acquiring frames, configure the surface with the pixel format, dimensions, and presentation mode.
+Use `surface.get_capabilities(&adapter)` to find supported formats and present modes:
+
+```rust
+let caps = surface.get_capabilities(&adapter);
+let surface_format = caps.formats[0]; // first format is the adapter's preferred choice
+
+let config = wgpu::SurfaceConfiguration {
+    usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
+    format: surface_format,
+    width: window_width,
+    height: window_height,
+    present_mode: wgpu::PresentMode::Fifo,
+    alpha_mode: wgpu::CompositeAlphaMode::Auto,
+    view_formats: vec![],
+    desired_maximum_frame_latency: 2,
+};
+surface.configure(&device, &config);
+```
+
+`get_default_config` is a shorthand that picks sensible defaults from the adapter's capabilities:
+
+```rust
+let config = surface
+    .get_default_config(&adapter, width, height)
+    .expect("surface not supported by adapter");
+surface.configure(&device, &config);
+```
+
+### SurfaceConfiguration fields
+
+| Field | Purpose |
+|---|---|
+| `usage` | Must include `RENDER_ATTACHMENT`; add `COPY_SRC` to read back the frame |
+| `format` | Pixel format for swapchain textures |
+| `width` / `height` | Must match the window size; must not be zero |
+| `present_mode` | Controls vsync and tearing (see below) |
+| `alpha_mode` | How the surface composites with the desktop |
+| `view_formats` | Extra formats for views created from swapchain textures |
+| `desired_maximum_frame_latency` | Preferred number of frames the GPU may queue ahead (typically 2) |
+
+### PresentMode
+
+| Variant | Behaviour |
+|---|---|
+| `Fifo` | Strict vsync; frames are queued in order; never tears |
+| `FifoRelaxed` | Like `Fifo` but may tear if a frame arrives late |
+| `Mailbox` | Triple-buffer vsync; always shows the latest frame, no tearing |
+| `Immediate` | No vsync; presents immediately; may tear |
+
+---
+
+## Render loop
+
+Each frame follows the same three steps: acquire a texture, render into it, present it.
+
+```rust
+let frame = surface.get_current_texture().expect("failed to acquire frame");
+let view = frame.texture.create_view(&wgpu::TextureViewDescriptor::default());
+
+let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+{
+    let mut rpass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+            view: &view,
+            resolve_target: None,
+            ops: wgpu::Operations {
+                load: wgpu::LoadOp::Clear(wgpu::Color::BLACK),
+                store: wgpu::StoreOp::Store,
+            },
+        })],
+        ..Default::default()
+    });
+    rpass.set_pipeline(&pipeline);
+    rpass.draw(0..3, 0..1);
+}
+
+queue.submit([encoder.finish()]);
+frame.present();
+```
+
+`present()` is a CPU-side call that hands the texture back to the compositor. GPU work was already submitted via `queue.submit`.
+
+---
+
+## Handling resize
+
+When the window is resized, re-call `surface.configure` with the new dimensions. Passing zero to `configure` is a validation error, so clamp to at least 1:
+
+```rust
+fn resize(
+    surface: &wgpu::Surface,
+    device: &wgpu::Device,
+    config: &mut wgpu::SurfaceConfiguration,
+    new_width: u32,
+    new_height: u32,
+) {
+    config.width = new_width.max(1);
+    config.height = new_height.max(1);
+    surface.configure(device, config);
+}
+```
+
+Call `resize` in response to the window's resize event before the next frame. Outstanding `SurfaceTexture`s from before the resize must be dropped (or `present`ed) before calling `configure` again.

@@ -1,0 +1,347 @@
+---
+title: "Device & Queue"
+description: "Open a logical GPU connection and submit command buffers for execution"
+---
+
+A `Device` is a logical connection to the GPU. It is responsible for creating almost all other GPU resources. A `Queue` executes recorded [`CommandBuffer`](/api/command-encoder)s and provides convenience methods for uploading data. Both are obtained together by calling [`Adapter::request_device`](/api/adapter).
+
+## Device
+
+### Resource Creation
+
+#### `create_buffer`
+
+```rust
+pub fn create_buffer(&self, desc: &BufferDescriptor<'_>) -> Buffer
+```
+
+Allocates a GPU buffer. See [Buffers](/api/buffers) for full documentation.
+
+#### `create_texture`
+
+```rust
+pub fn create_texture(&self, desc: &TextureDescriptor<'_>) -> Texture
+```
+
+Creates a GPU texture. See [Textures & Samplers](/api/textures) for full documentation.
+
+#### `create_sampler`
+
+```rust
+pub fn create_sampler(&self, desc: &SamplerDescriptor<'_>) -> Sampler
+```
+
+Creates a sampler that controls how textures are filtered and addressed in shaders.
+
+#### `create_shader_module`
+
+```rust
+pub fn create_shader_module(&self, desc: ShaderModuleDescriptor<'_>) -> ShaderModule
+```
+
+Compiles and validates a shader. Accepts WGSL, SPIR-V, or GLSL source. See [Pipelines & Shaders](/api/pipelines) for full documentation.
+
+#### `create_bind_group_layout`
+
+```rust
+pub fn create_bind_group_layout(
+    &self,
+    desc: &BindGroupLayoutDescriptor<'_>,
+) -> BindGroupLayout
+```
+
+Describes the types and shader-stage visibility of resources bound at each slot. See [Bind Groups](/api/bind-groups).
+
+#### `create_bind_group`
+
+```rust
+pub fn create_bind_group(&self, desc: &BindGroupDescriptor<'_>) -> BindGroup
+```
+
+Binds concrete GPU resources (buffers, textures, samplers) to slots defined by a `BindGroupLayout`. See [Bind Groups](/api/bind-groups).
+
+#### `create_pipeline_layout`
+
+```rust
+pub fn create_pipeline_layout(
+    &self,
+    desc: &PipelineLayoutDescriptor<'_>,
+) -> PipelineLayout
+```
+
+Combines multiple `BindGroupLayout`s into a single pipeline layout that shaders use to locate their resource bindings.
+
+#### `create_render_pipeline`
+
+```rust
+pub fn create_render_pipeline(
+    &self,
+    desc: &RenderPipelineDescriptor<'_>,
+) -> RenderPipeline
+```
+
+Creates a complete graphics pipeline (vertex + fragment shaders, rasterizer state, blending, depth/stencil). See [Pipelines & Shaders](/api/pipelines).
+
+#### `create_compute_pipeline`
+
+```rust
+pub fn create_compute_pipeline(
+    &self,
+    desc: &ComputePipelineDescriptor<'_>,
+) -> ComputePipeline
+```
+
+Creates a compute-only pipeline. See [Pipelines & Shaders](/api/pipelines).
+
+#### `create_command_encoder`
+
+```rust
+pub fn create_command_encoder(
+    &self,
+    desc: &CommandEncoderDescriptor<'_>,
+) -> CommandEncoder
+```
+
+Creates a new command encoder used to record render passes, compute passes, and copy operations. See [Command Encoder](/api/command-encoder).
+
+#### `create_query_set`
+
+```rust
+pub fn create_query_set(&self, desc: &QuerySetDescriptor<'_>) -> QuerySet
+```
+
+Creates a query set for occlusion, timestamp, or pipeline statistics queries.
+
+---
+
+### Device Management
+
+#### `poll`
+
+```rust
+pub fn poll(&self, poll_type: PollType) -> Result<PollStatus, PollError>
+```
+
+Checks for completed GPU work and runs pending map callbacks. Use `PollType::wait_indefinitely()` to block until the queue is idle, or pass a `SubmissionIndex` to wait for a specific submission. On the web this is a no-op.
+
+```rust
+// Block until a specific submission is done
+device.poll(wgpu::PollType::Wait {
+    submission_index: Some(submission_index),
+    timeout: None,
+})?;
+
+// Block until all in-flight work is done
+device.poll(wgpu::PollType::wait_indefinitely())?;
+
+// Poll without blocking
+device.poll(wgpu::PollType::Poll)?;
+```
+
+#### `features`
+
+```rust
+pub fn features(&self) -> Features
+```
+
+Returns the features enabled when the device was created. This will match `DeviceDescriptor::required_features` exactly — no additional features can be used at runtime even if the adapter supports them.
+
+#### `limits`
+
+```rust
+pub fn limits(&self) -> Limits
+```
+
+Returns the limits active on this device, matching `DeviceDescriptor::required_limits`.
+
+#### `on_uncaptured_error`
+
+```rust
+pub fn on_uncaptured_error(&self, handler: Arc<dyn UncapturedErrorHandler>)
+```
+
+Registers a callback invoked for any GPU error not caught by an active error scope. The default behavior is to panic.
+
+```rust
+device.on_uncaptured_error(Arc::new(|err| {
+    eprintln!("wgpu error: {err}");
+}));
+```
+
+#### `push_error_scope` / `ErrorScopeGuard::pop`
+
+```rust
+pub fn push_error_scope(&self, filter: ErrorFilter) -> ErrorScopeGuard
+```
+
+Pushes a scoped error handler that captures errors matching the given filter (`OutOfMemory`, `Validation`, or `Internal`). Pop the scope to retrieve any captured error:
+
+```rust
+let scope = device.push_error_scope(wgpu::ErrorFilter::Validation);
+// ... record commands that might produce validation errors ...
+if let Some(err) = scope.pop().await {
+    eprintln!("validation error: {err}");
+}
+```
+
+#### `destroy`
+
+```rust
+pub fn destroy(&self)
+```
+
+Immediately destroys the device and its associated resources.
+
+---
+
+## `DeviceDescriptor`
+
+Passed to `Adapter::request_device`.
+
+<ParamField path="label" type="Option&lt;&amp;str&gt;">
+  Debug label shown in graphics debuggers.
+</ParamField>
+
+<ParamField path="required_features" type="Features">
+  Optional GPU features to enable. Requesting a feature the adapter does not support will panic.
+</ParamField>
+
+<ParamField path="required_limits" type="Limits">
+  Resource limits to enforce. Must not exceed what the adapter supports.
+</ParamField>
+
+<ParamField path="memory_hints" type="MemoryHints">
+  Advisory hints for memory allocation behavior (`MemoryHints::default()` is fine for most applications).
+</ParamField>
+
+```rust
+let (device, queue) = adapter
+    .request_device(&wgpu::DeviceDescriptor {
+        label: Some("primary device"),
+        required_features: wgpu::Features::TIMESTAMP_QUERY,
+        required_limits: wgpu::Limits::default(),
+        memory_hints: wgpu::MemoryHints::default(),
+    })
+    .await
+    .unwrap();
+```
+
+---
+
+## Queue
+
+### `submit`
+
+```rust
+pub fn submit<I: IntoIterator<Item = CommandBuffer>>(
+    &self,
+    command_buffers: I,
+) -> SubmissionIndex
+```
+
+Submits a list of recorded `CommandBuffer`s to the GPU for execution. Returns a `SubmissionIndex` that can be passed to `device.poll` to wait for completion.
+
+```rust
+let cmd = encoder.finish();
+let index = queue.submit([cmd]);
+device.poll(wgpu::PollType::Wait { submission_index: Some(index), timeout: None })?;
+```
+
+### `write_buffer`
+
+```rust
+pub fn write_buffer(
+    &self,
+    buffer: &Buffer,
+    offset: BufferAddress,
+    data: &[u8],
+)
+```
+
+Copies bytes from CPU memory into a GPU buffer. The actual GPU transfer is deferred until the next `queue.submit` call, but the data is copied into staging memory immediately so the caller's slice can be dropped afterwards.
+
+```rust
+queue.write_buffer(&uniform_buf, 0, bytemuck::bytes_of(&my_uniforms));
+```
+
+### `write_texture`
+
+```rust
+pub fn write_texture(
+    &self,
+    texture: TexelCopyTextureInfo<'_>,
+    data: &[u8],
+    data_layout: TexelCopyBufferLayout,
+    size: Extent3d,
+)
+```
+
+Copies texel data from CPU memory into a GPU texture region. Like `write_buffer`, the GPU transfer is batched with the next submit.
+
+```rust
+queue.write_texture(
+    texture.as_image_copy(),
+    &rgba_bytes,
+    wgpu::TexelCopyBufferLayout {
+        offset: 0,
+        bytes_per_row: Some(4 * width),
+        rows_per_image: None,
+    },
+    wgpu::Extent3d { width, height, depth_or_array_layers: 1 },
+);
+```
+
+### `on_submitted_work_done`
+
+```rust
+pub fn on_submitted_work_done(&self, callback: impl FnOnce() + Send + 'static)
+```
+
+Registers a one-shot callback that fires after the previous `submit` finishes executing on the GPU, once `device.poll` or `instance.poll_all` is called.
+
+### `get_timestamp_period`
+
+```rust
+pub fn get_timestamp_period(&self) -> f32
+```
+
+Returns the number of nanoseconds per GPU timestamp tick. Multiply raw timestamp query values by this to get nanosecond durations. Always `1.0` on WebGPU.
+
+---
+
+## Usage Example
+
+```rust
+// Write uniforms and submit a frame
+#[repr(C)]
+#[derive(bytemuck::Pod, bytemuck::Zeroable, Copy, Clone)]
+struct Uniforms { transform: [[f32; 4]; 4] }
+
+queue.write_buffer(&uniform_buf, 0, bytemuck::bytes_of(&uniforms));
+
+let mut encoder = device.create_command_encoder(&wgpu::CommandEncoderDescriptor {
+    label: Some("frame encoder"),
+});
+{
+    let mut pass = encoder.begin_render_pass(&render_pass_desc);
+    pass.set_pipeline(&pipeline);
+    pass.set_bind_group(0, &bind_group, &[]);
+    pass.draw(0..3, 0..1);
+}
+queue.submit([encoder.finish()]);
+```
+
+<CardGroup cols={2}>
+  <Card title="Buffers" href="/api/buffers">
+    Allocate and map GPU memory
+  </Card>
+  <Card title="Command Encoder" href="/api/command-encoder">
+    Record render and compute passes
+  </Card>
+  <Card title="Pipelines & Shaders" href="/api/pipelines">
+    Create render and compute pipelines
+  </Card>
+  <Card title="Bind Groups" href="/api/bind-groups">
+    Bind resources to shader slots
+  </Card>
+</CardGroup>

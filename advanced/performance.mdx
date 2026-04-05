@@ -1,0 +1,157 @@
+---
+title: "Performance"
+description: "Tips and patterns for maximizing GPU performance with wgpu"
+---
+
+GPU programming performance depends on minimizing CPU-GPU round trips, reducing state changes, and keeping the GPU busy. The tips below apply across all wgpu backends.
+
+## Minimize state changes
+
+GPU state changes (pipeline switches, bind group changes) can flush the GPU pipeline. Group work to reduce them:
+
+```rust
+// Good: draw all objects with pipeline A, then pipeline B
+rpass.set_pipeline(&pipeline_a);
+for obj in objects_using_a {
+    rpass.set_bind_group(0, &obj.bind_group, &[]);
+    rpass.draw_indexed(obj.indices.clone(), 0, 0..1);
+}
+
+rpass.set_pipeline(&pipeline_b);
+for obj in objects_using_b {
+    rpass.set_bind_group(0, &obj.bind_group, &[]);
+    rpass.draw_indexed(obj.indices.clone(), 0, 0..1);
+}
+```
+
+## Reuse bind group layouts
+
+Create `BindGroupLayout` objects once and share them across all pipelines with the same binding signature:
+
+```rust
+// Create once at startup
+let shared_layout = Arc::new(device.create_bind_group_layout(&desc));
+
+// Use in multiple pipelines
+let pipeline_a = device.create_pipeline_layout(&PipelineLayoutDescriptor {
+    bind_group_layouts: &[Some(&shared_layout)],
+    ..
+});
+```
+
+## Compute workgroup sizing
+
+Align workgroup sizes to the GPU's natural parallelism (32 or 64 threads per warp/wavefront):
+
+```wgsl
+@compute @workgroup_size(64, 1, 1)  // good for most GPUs
+fn main(@builtin(global_invocation_id) gid: vec3<u32>) { .. }
+```
+
+Dispatch enough workgroups to cover all elements:
+
+```rust
+let count = (n_elements as u32).div_ceil(64);
+cpass.dispatch_workgroups(count, 1, 1);
+```
+
+## Buffer upload patterns
+
+Prefer `queue.write_buffer` for small, frequent uploads. For large or structured uploads, use a staging buffer:
+
+```rust
+// Staging pattern for large uploads
+let staging = device.create_buffer(&wgpu::BufferDescriptor {
+    usage: wgpu::BufferUsages::MAP_WRITE | wgpu::BufferUsages::COPY_SRC,
+    size,
+    ..
+});
+let slice = staging.slice(..);
+slice.map_async(wgpu::MapMode::Write, |_| {});
+device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+{
+    let mut view = slice.get_mapped_range_mut();
+    view.copy_from_slice(&data);
+}
+staging.unmap();
+encoder.copy_buffer_to_buffer(&staging, 0, &gpu_buffer, 0, size);
+```
+
+## Use indirect draw for GPU-driven rendering
+
+When draw parameters are determined on the GPU, avoid reading them back to the CPU:
+
+```rust
+// Compute shader writes draw parameters into a buffer with INDIRECT usage
+// Render pass reads them without a CPU round trip
+rpass.draw_indirect(&indirect_buffer, 0);
+rpass.draw_indexed_indirect(&indirect_buffer, 0);
+```
+
+## Texture formats
+
+Choose the most compact format that meets your needs:
+
+| Use case | Recommended format |
+|----------|--------------------|
+| Color (LDR) | `Rgba8UnormSrgb` or `Bgra8UnormSrgb` |
+| Color (HDR) | `Rgba16Float` |
+| Depth | `Depth32Float` or `Depth24Plus` |
+| Compressed (desktop) | `Bc1RgbaUnormSrgb` through `Bc7RgbaUnorm` |
+| Compressed (mobile) | `Etc2Rgb8Unorm`, `Astc { block, channel }` |
+
+<Note>
+Compressed texture format support depends on the adapter. Check `adapter.get_texture_format_features(format).flags` before using.
+</Note>
+
+## GPU timestamp queries
+
+Measure GPU execution time precisely with `Features::TIMESTAMP_QUERY`:
+
+```rust
+let query_set = device.create_query_set(&wgpu::QuerySetDescriptor {
+    label: Some("timestamps"),
+    ty: wgpu::QueryType::Timestamp,
+    count: 2,
+});
+
+// In compute pass:
+cpass.write_timestamp(&query_set, 0);  // start
+cpass.dispatch_workgroups(count, 1, 1);
+cpass.write_timestamp(&query_set, 1);  // end
+
+// Resolve to a buffer after the pass
+encoder.resolve_query_set(&query_set, 0..2, &result_buffer, 0);
+```
+
+## Pipeline cache
+
+Avoid shader recompilation between sessions with `PipelineCache` (requires `Features::PIPELINE_CACHE`):
+
+```rust
+let cache = device.create_pipeline_cache(&wgpu::PipelineCacheDescriptor {
+    label: None,
+    data: cached_bytes.as_deref(), // None on first run
+    fallback: true,
+});
+
+let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+    cache: Some(&cache),
+    ..
+});
+
+// Save cache.get_data() to disk for next launch
+```
+
+## Downlevel targets
+
+OpenGL and WebGL2 backends have fewer features. Use `adapter.get_downlevel_capabilities()` to check what's available and provide fallback paths for broader compatibility.
+
+<CardGroup cols={2}>
+  <Card title="Debugging" icon="bug" href="/guides/debugging">
+    Profile GPU work with timestamp queries and RenderDoc.
+  </Card>
+  <Card title="Compute shaders" icon="calculator" href="/guides/compute-shaders">
+    Efficient compute dispatch patterns.
+  </Card>
+</CardGroup>

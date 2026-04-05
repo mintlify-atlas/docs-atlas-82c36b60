@@ -1,0 +1,116 @@
+---
+title: "HAL backends"
+description: "Platform-specific backend implementations in wgpu-hal"
+---
+
+wgpu-hal provides four production backends and one secondary backend. Each backend implements the `wgpu_hal::Api` trait for a specific native graphics API.
+
+<Warning>
+wgpu-hal is an unsafe, low-level abstraction. Most users should use the safe `wgpu` crate instead. Direct HAL use requires deep GPU programming knowledge and careful attention to safety requirements.
+</Warning>
+
+## Backend summary
+
+| Backend | Type | Platforms | Feature flag |
+|---------|------|-----------|--------------|
+| Vulkan | `vulkan::Api` | Windows, Linux, Android, macOS* | `vulkan` |
+| Metal | `metal::Api` | macOS, iOS | `metal` |
+| D3D12 | `dx12::Api` | Windows | `dx12` |
+| OpenGL/GLES | `gles::Api` | Windows, Linux, Android, Emscripten, WebGL2 | `gles` |
+
+*macOS requires MoltenVK and the `vulkan-portability` feature.
+
+## Vulkan (`vulkan::Api`)
+
+The Vulkan backend uses the [`ash`](https://crates.io/crates/ash) crate for Vulkan bindings.
+
+**Platforms:** Windows, Linux, Android. macOS/iOS via MoltenVK with `vulkan-portability` feature.
+
+```toml
+# Default on Windows, Linux, Android
+wgpu = { version = "29", features = ["vulkan"] }
+
+# macOS/iOS via MoltenVK
+wgpu = { version = "29", features = ["vulkan", "vulkan-portability"] }
+```
+
+**Environment variables:**
+- `WGPU_BACKEND=vulkan` — force Vulkan selection
+- `WGPU_ADAPTER_NAME=<substring>` — select adapter by name
+
+## Metal (`metal::Api`)
+
+The Metal backend uses the [`objc2-metal`](https://crates.io/crates/objc2-metal) crate for Metal bindings.
+
+**Platforms:** macOS 10.13+ and iOS 13+.
+
+```toml
+wgpu = { version = "29", features = ["metal"] }
+```
+
+Metal is the default and only first-class backend on Apple platforms. No extra configuration is required.
+
+**Environment variables:**
+- `WGPU_BACKEND=metal` — force Metal selection
+
+## D3D12 (`dx12::Api`)
+
+The D3D12 backend uses the [`windows`](https://crates.io/crates/windows) crate for Direct3D 12 bindings.
+
+**Platforms:** Windows only.
+
+```toml
+wgpu = { version = "29", features = ["dx12"] }
+```
+
+**Shader compiler selection:**
+
+| `WGPU_DX12_COMPILER` | Description |
+|----------------------|-------------|
+| `fxc` (default) | Legacy FXC compiler, included in Windows |
+| `dxc` | Modern DXC compiler — requires `dxcompiler.dll` (min v1.8.2502) |
+| `static-dxc` | Statically linked DXC via the `static-dxc` feature |
+
+**D3D12 Agility SDK:** Configure a newer D3D12 runtime to ship with your application:
+
+```rust
+let options = wgpu::Dx12BackendOptions {
+    agility_sdk: Some(wgpu::Dx12AgilitySDK {
+        sdk_version: 619,
+        sdk_path: "path/to/sdk/bin/x64".into(),
+    }),
+    ..Default::default()
+};
+```
+
+## OpenGL/GLES (`gles::Api`)
+
+The GLES backend uses the [`glow`](https://crates.io/crates/glow) crate for OpenGL/OpenGL ES bindings.
+
+**Platforms:** Windows (GL 3.3+), Linux (GL 3.3+ or GL ES 3.0+), Android (GL ES 3.0+), Emscripten, WebGL2 (via `webgl` feature).
+
+```toml
+wgpu = { version = "29", features = ["gles"] }
+
+# For WebGL2 on WASM
+wgpu = { version = "29", features = ["webgl"] }
+
+# For macOS via ANGLE
+wgpu = { version = "29", features = ["gles", "angle"] }
+```
+
+<Note>
+The GLES backend has reduced feature support compared to Vulkan, Metal, and D3D12. Use `adapter.get_downlevel_capabilities()` to check what features are available on a given device.
+</Note>
+
+**Environment variables:**
+- `WGPU_BACKEND=gl` — force OpenGL/GLES selection
+
+<CardGroup cols={2}>
+  <Card title="HAL overview" icon="layer-group" href="/api/hal/overview">
+    Design principles and when to use wgpu-hal directly.
+  </Card>
+  <Card title="Platform support" icon="globe" href="/guides/platform-support">
+    High-level platform and backend support matrix.
+  </Card>
+</CardGroup>

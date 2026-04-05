@@ -1,0 +1,118 @@
+---
+title: "Textures & Samplers"
+description: "GPU image resources and sampling configurations"
+---
+
+A `Texture` is a structured GPU image resource. A `Sampler` describes how a texture is read in a shader (filtering, addressing modes). A `TextureView` is a handle that lets a texture be bound to a pipeline.
+
+## Creating a texture
+
+```rust
+let texture = device.create_texture(&wgpu::TextureDescriptor {
+    label: Some("my-texture"),
+    size: wgpu::Extent3d {
+        width: 512,
+        height: 512,
+        depth_or_array_layers: 1,
+    },
+    mip_level_count: 1,
+    sample_count: 1,
+    dimension: wgpu::TextureDimension::D2,
+    format: wgpu::TextureFormat::Rgba8UnormSrgb,
+    usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+    view_formats: &[],
+});
+```
+
+## Texture usages
+
+| Flag | Description |
+|------|-------------|
+| `COPY_SRC` | Source of a copy operation |
+| `COPY_DST` | Destination of a copy or `write_texture` |
+| `TEXTURE_BINDING` | Bound as a texture in a shader |
+| `STORAGE_BINDING` | Bound as a writable storage texture in a shader |
+| `RENDER_ATTACHMENT` | Used as a color or depth/stencil render target |
+
+## Common texture formats
+
+| Format | Description |
+|--------|-------------|
+| `Rgba8UnormSrgb` | 8-bit RGBA, sRGB color space — most common for color textures |
+| `Bgra8UnormSrgb` | 8-bit BGRA sRGB — preferred surface format on many platforms |
+| `Rgba16Float` | 16-bit float RGBA — HDR rendering |
+| `R32Float` | 32-bit float, single channel — depth or data textures |
+| `Depth32Float` | 32-bit float depth — depth attachment |
+| `Depth24Plus` | At least 24-bit depth, implementation-defined |
+
+## Creating a texture view
+
+Most APIs use `TextureView`, not `Texture` directly:
+
+```rust
+let view = texture.create_view(&wgpu::TextureViewDescriptor::default());
+```
+
+For specific mip levels or array layers:
+
+```rust
+let view = texture.create_view(&wgpu::TextureViewDescriptor {
+    format: Some(wgpu::TextureFormat::Rgba8UnormSrgb),
+    dimension: Some(wgpu::TextureViewDimension::D2),
+    base_mip_level: 0,
+    mip_level_count: Some(1),
+    base_array_layer: 0,
+    array_layer_count: Some(1),
+    ..Default::default()
+});
+```
+
+## Uploading texture data
+
+```rust
+queue.write_texture(
+    wgpu::TexelCopyTextureInfo {
+        texture: &texture,
+        mip_level: 0,
+        origin: wgpu::Origin3d::ZERO,
+        aspect: wgpu::TextureAspect::All,
+    },
+    &rgba_bytes,
+    wgpu::TexelCopyBufferLayout {
+        offset: 0,
+        bytes_per_row: Some(4 * 512),   // 4 bytes × width
+        rows_per_image: Some(512),
+    },
+    wgpu::Extent3d { width: 512, height: 512, depth_or_array_layers: 1 },
+);
+```
+
+## Creating a sampler
+
+```rust
+let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
+    label: Some("linear-sampler"),
+    address_mode_u: wgpu::AddressMode::ClampToEdge,
+    address_mode_v: wgpu::AddressMode::ClampToEdge,
+    address_mode_w: wgpu::AddressMode::ClampToEdge,
+    mag_filter: wgpu::FilterMode::Linear,
+    min_filter: wgpu::FilterMode::Linear,
+    mipmap_filter: wgpu::FilterMode::Nearest,
+    ..Default::default()
+});
+```
+
+| `AddressMode` | Behaviour past [0, 1] |
+|---------------|----------------------|
+| `ClampToEdge` | Repeats the edge texel |
+| `Repeat` | Tiles the texture |
+| `MirrorRepeat` | Tiles, flipping on each repeat |
+
+<CardGroup cols={2}>
+  <Card title="Buffers" icon="database" href="/api/buffers">
+    GPU memory for data and vertices.
+  </Card>
+  <Card title="Bind groups" icon="link" href="/api/bind-groups">
+    Bind textures and samplers to shaders.
+  </Card>
+</CardGroup>

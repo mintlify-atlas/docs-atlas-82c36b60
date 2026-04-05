@@ -1,0 +1,109 @@
+---
+title: "Naga frontends"
+description: "Parsing WGSL, SPIR-V, and GLSL shader sources into Naga IR"
+---
+
+A Naga **front-end** parses a shader source format and produces a `naga::Module` (Naga IR). Three front-ends are available, each guarded by a Cargo feature flag.
+
+## WGSL (`wgsl-in`)
+
+WGSL is the primary shading language for wgpu. It is the only front-end fully validated against the WGSL specification and is enabled by default.
+
+**In wgpu:** enabled unconditionally — no extra feature flag needed.
+
+```rust
+// Use WGSL via wgpu (recommended)
+let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+    label: Some("shader"),
+    source: wgpu::ShaderSource::Wgsl(include_str!("shader.wgsl").into()),
+});
+```
+
+Using Naga directly:
+
+```rust
+let module: naga::Module = naga::front::wgsl::parse_str(source)?;
+
+// Validate the parsed module
+let info = naga::valid::Validator::new(
+    naga::valid::ValidationFlags::all(),
+    naga::valid::Capabilities::all(),
+).validate(&module)?;
+```
+
+## SPIR-V (`spv-in`)
+
+SPIR-V is the binary intermediate language used throughout the Vulkan ecosystem. Use this to load shaders compiled by `glslc`, `dxc`, or `spirv-cross`.
+
+**In wgpu:** add the `spirv` feature to your `wgpu` dependency.
+
+```toml
+wgpu = { version = "29", features = ["spirv"] }
+```
+
+```rust
+// Use SPIR-V via wgpu
+let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+    label: Some("spirv-shader"),
+    source: wgpu::ShaderSource::SpirV(
+        bytemuck::cast_slice(spirv_bytes).into()
+    ),
+});
+```
+
+Using Naga directly:
+
+```rust
+let options = naga::front::spv::Options::default();
+let module: naga::Module = naga::front::spv::parse_u8_slice(spirv_bytes, &options)?;
+```
+
+<Warning>
+`spirv_bytes` must have a length that is a multiple of 4 — SPIR-V words are 32 bits wide.
+</Warning>
+
+## GLSL (`glsl-in`)
+
+The GLSL front-end supports GLSL 440+ with Vulkan semantics. It has secondary support status — some features may be incomplete.
+
+**In wgpu:** add the `glsl` feature to your `wgpu` dependency.
+
+```toml
+wgpu = { version = "29", features = ["glsl"] }
+```
+
+```rust
+// Use GLSL via wgpu
+let module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+    label: Some("glsl-shader"),
+    source: wgpu::ShaderSource::Glsl {
+        shader: include_str!("shader.vert").into(),
+        stage: naga::ShaderStage::Vertex,
+        defines: Default::default(),
+    },
+});
+```
+
+Using Naga directly:
+
+```rust
+let mut frontend = naga::front::glsl::Frontend::default();
+let options = naga::front::glsl::Options {
+    stage: naga::ShaderStage::Vertex,
+    defines: Default::default(),
+};
+let module: naga::Module = frontend.parse(&options, source)?;
+```
+
+<Note>
+GLSL input requires Vulkan-style GLSL (using `layout(set=..., binding=...)` qualifiers). Desktop GLSL without Vulkan semantics is not supported.
+</Note>
+
+<CardGroup cols={2}>
+  <Card title="Naga backends" icon="arrow-right" href="/api/naga/backends">
+    Generate HLSL, MSL, GLSL, and SPIR-V from Naga IR.
+  </Card>
+  <Card title="WGSL shaders" icon="code" href="/advanced/wgsl-shaders">
+    Writing effective WGSL shaders for wgpu.
+  </Card>
+</CardGroup>

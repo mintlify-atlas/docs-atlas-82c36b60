@@ -1,0 +1,219 @@
+---
+title: "Naga backends"
+description: "Generating HLSL, MSL, GLSL, SPIR-V, and WGSL from Naga IR"
+---
+
+A Naga **back-end** takes a validated `naga::Module` and `naga::valid::ModuleInfo` and writes shader code in a target language. Each back-end is a separate Cargo feature.
+
+<Note>
+Most wgpu users never call a back-end directly. `wgpu-hal` enables the appropriate back-end feature for each platform and calls it automatically inside `create_shader_module`.
+</Note>
+
+The general pattern for calling a back-end directly is:
+
+```rust
+// 1. Parse
+let module = naga::front::wgsl::parse_str(source)?;
+
+// 2. Validate
+let module_info = naga::valid::Validator::new(
+    naga::valid::ValidationFlags::all(),
+    naga::valid::Capabilities::all(),
+)
+.validate(&module)?;
+
+// 3. Generate (example: GLSL)
+use naga::back::glsl;
+let mut output = String::new();
+glsl::Writer::new(
+    &mut output,
+    &module,
+    &module_info,
+    &glsl::Options::default(),
+    &glsl::PipelineOptions {
+        entry_point: "main_fs".into(),
+        shader_stage: naga::ShaderStage::Fragment,
+        multiview: None,
+    },
+    naga::proc::BoundsCheckPolicies::default(),
+)?.write()?;
+```
+
+---
+
+## SPIR-V (`spv-out`)
+
+**Feature flag:** `spv-out`  
+**wgpu backend:** Vulkan  
+**Output:** Binary `Vec<u32>`
+
+The SPIR-V back-end writes a binary SPIR-V module, the intermediate format consumed directly by the Vulkan driver.
+
+```rust
+use naga::back::spv;
+
+let mut writer = spv::Writer::new(&spv::Options::default())?;
+let spv_binary: Vec<u32> = writer.write(&module, &module_info, None, &None, vec![])?;
+```
+
+`spv::Options` lets you select the SPIR-V version, enable debug information, and configure capability declarations. The `vulkan` feature of `wgpu-hal` enables `spv-out` automatically.
+
+**Notes:**
+- Primary support. This is the most complete and well-tested back-end.
+- The `spv-out` feature depends on the `spirv` crate for opcode constants and encoding.
+
+---
+
+## MSL (`msl-out`)
+
+**Feature flag:** `msl-out` (or `msl-out-if-target-apple` to restrict to Apple targets)  
+**wgpu backend:** Metal  
+**Output:** `String`
+
+The MSL back-end generates Metal Shading Language source, which is then compiled by the Metal runtime.
+
+```rust
+use naga::back::msl;
+
+let mut output = String::new();
+let mut writer = msl::Writer::new(&mut output);
+let pipeline_options = msl::PipelineOptions::default();
+writer.write(&module, &module_info, &msl::Options::default(), &pipeline_options)?;
+```
+
+`msl::Options` exposes Metal feature-level targeting, argument buffer binding layout, and per-entry-point resource binding remaps (needed because MSL uses a flat binding space unlike WGSL's `@group`/`@binding` system).
+
+**Notes:**
+- Primary support.
+- `msl-out-if-target-apple` is a convenience alias that compiles to a no-op on non-Apple targets, allowing `--all-features` builds on Linux/Windows.
+- The `metal` feature of `wgpu-hal` enables `msl-out` via `naga/msl-out`.
+
+---
+
+## HLSL (`hlsl-out`)
+
+**Feature flag:** `hlsl-out` (or `hlsl-out-if-target-windows` to restrict to Windows)  
+**wgpu backend:** D3D12  
+**Output:** `String`  
+**Shader Model:** 5.0+ (DirectX 11+)
+
+The HLSL back-end generates High-Level Shading Language source. The D3D12 backend then compiles this to DXIL using either DXC or FXC.
+
+```rust
+use naga::back::hlsl;
+
+let mut output = String::new();
+let mut writer = hlsl::Writer::new(&mut output, &hlsl::Options::default());
+writer.write(&module, &module_info)?;
+```
+
+`hlsl::Options` allows you to select the shader model target and configure binding remapping (HLSL uses `register(b0, space0)` style bindings rather than WGSL's `@group`/`@binding`).
+
+**Notes:**
+- Primary support.
+- Targets Shader Model 5.0 (DirectX 11) and later. The D3D12 backend always uses SM 6.x features when available.
+- `hlsl-out-if-target-windows` is the Windows-only alias, analogous to `msl-out-if-target-apple`.
+- The `dx12` feature of `wgpu-hal` enables `hlsl-out` via `naga/hlsl-out`.
+
+---
+
+## GLSL (`glsl-out`)
+
+**Feature flag:** `glsl-out`  
+**wgpu backend:** OpenGL / WebGL2  
+**Output:** `String`  
+**Versions:** GLSL 330+ (core profile) and GLSL ES 300+ (ES profile)
+
+The GLSL back-end generates GLSL suitable for OpenGL 3.3+ or OpenGL ES 3.0+. This is the backend used by wgpu's GLES backend and by WebGL2.
+
+```rust
+use naga::back::glsl;
+
+let mut output = String::new();
+glsl::Writer::new(
+    &mut output,
+    &module,
+    &module_info,
+    &glsl::Options {
+        version: glsl::Version::Embedded {
+            version: 300,
+            is_webgl: true,
+        },
+        ..Default::default()
+    },
+    &glsl::PipelineOptions {
+        entry_point: "vs_main".into(),
+        shader_stage: naga::ShaderStage::Vertex,
+        multiview: None,
+    },
+    naga::proc::BoundsCheckPolicies::default(),
+)?.write()?;
+```
+
+**Notes:**
+- Secondary support. Some advanced GPU features available in WGSL have no GLSL equivalent and will produce errors or workarounds.
+- Each call to the GLSL writer targets a single entry point and shader stage. To compile a module with both a vertex and fragment entry point, call the writer twice.
+- The `gles` feature of `wgpu-hal` enables `glsl-out` via `naga/glsl-out`.
+
+---
+
+## WGSL (`wgsl-out`)
+
+**Feature flag:** `wgsl-out`  
+**wgpu backend:** None (not used by any wgpu backend)  
+**Output:** `String`
+
+The WGSL back-end re-serializes Naga IR back into WGSL source. It is useful for debugging — you can parse a SPIR-V shader and inspect its WGSL representation — but it has partial support.
+
+```rust
+use naga::back::wgsl;
+
+let mut output = String::new();
+wgsl::write_string(&module, &module_info, wgsl::WriterFlags::empty())?;
+```
+
+**Notes:**
+- Secondary support. Not all IR constructs can be faithfully round-tripped to WGSL.
+- No wgpu backend targets WGSL output; it is intended as a developer tool only.
+
+---
+
+## DOT (`dot-out`)
+
+**Feature flag:** `dot-out`  
+**wgpu backend:** None  
+**Output:** GraphViz DOT `String`
+
+The DOT back-end emits a GraphViz representation of the shader's control-flow graph. It is a debugging and visualization tool, not a shading language.
+
+```bash
+# Using naga-cli:
+naga shader.spv shader.dot
+dot -Tpng shader.dot -o shader.png
+```
+
+**Notes:**
+- Secondary support.
+- Useful for understanding complex control flow or verifying that a front-end is parsing branches and loops correctly.
+
+---
+
+## Backend summary
+
+| Back-end | Feature flag | Output | wgpu backend | Support |
+|---|---|---|---|---|
+| SPIR-V | `spv-out` | Binary `Vec<u32>` | Vulkan | Primary |
+| MSL | `msl-out` | `String` | Metal | Primary |
+| HLSL | `hlsl-out` | `String` | D3D12 | Primary |
+| GLSL | `glsl-out` | `String` | OpenGL / WebGL2 | Secondary |
+| WGSL | `wgsl-out` | `String` | — (debug only) | Secondary |
+| DOT | `dot-out` | `String` | — (debug only) | Secondary |
+
+<CardGroup cols={2}>
+  <Card title="Naga overview" icon="book" href="/api/naga/overview">
+    Naga IR, feature flags, and the naga-cli tool
+  </Card>
+  <Card title="Frontends" icon="arrow-right-to-bracket" href="/api/naga/frontends">
+    Parsing WGSL, SPIR-V, and GLSL into Naga IR
+  </Card>
+</CardGroup>

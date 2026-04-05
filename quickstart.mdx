@@ -1,80 +1,261 @@
 ---
 title: "Quickstart"
-description: "Start building awesome documentation in minutes"
+description: "Write your first wgpu compute shader in minutes"
 ---
 
-## Get started in three steps
+This guide walks through a minimal compute program: it takes a list of numbers, doubles each one on the GPU, and prints the result. You will touch every major wgpu concept — instance, adapter, device, buffers, shaders, pipelines, command encoding, and result readback.
 
-Get your documentation site running locally and make your first customization.
+<Steps>
 
-### Step 1: Set up your local environment
+<Step title="Create a Cargo project and add dependencies">
 
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
-    
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
-    
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
+```bash
+cargo new hello-compute
+cd hello-compute
+```
 
-### Step 2: Deploy your changes
+Add the following to `Cargo.toml`:
 
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
-    
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
+```toml Cargo.toml
+[dependencies]
+wgpu = "29"
+pollster = "0.4"
+bytemuck = { version = "1", features = ["derive"] }
+env_logger = "0.11"
+```
 
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
+- **pollster** — blocks on `async` futures; wgpu's adapter and device requests are async.
+- **bytemuck** — safely reinterprets `&[f32]` as `&[u8]` for buffer uploads.
+- **env_logger** — surfaces wgpu's internal logs via `RUST_LOG=wgpu=warn`.
 
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
+</Step>
 
-### Step 3: Go live
+<Step title="Initialize wgpu and request an adapter">
 
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
+An `Instance` loads the platform's graphics libraries. `request_adapter` selects a physical GPU.
+
+```rust src/main.rs
+use wgpu::util::DeviceExt;
+
+fn main() {
+    env_logger::init();
+
+    let instance = wgpu::Instance::new(
+        wgpu::InstanceDescriptor::new_without_display_handle()
+    );
+
+    let adapter =
+        pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default()))
+            .expect("Failed to create adapter");
+}
+```
+
+<Note>
+  `request_adapter` is `async` because the WebGPU standard requires it. On native targets the future resolves immediately, so `pollster::block_on` is safe and has no overhead.
+</Note>
+
+</Step>
+
+<Step title="Request a device and queue">
+
+A `Device` creates and manages GPU resources. A `Queue` accepts recorded work for execution.
+
+```rust
+let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+    label: None,
+    required_features: wgpu::Features::empty(),
+    required_limits: wgpu::Limits::downlevel_defaults(),
+    experimental_features: wgpu::ExperimentalFeatures::disabled(),
+    memory_hints: wgpu::MemoryHints::MemoryUsage,
+    trace: wgpu::Trace::Off,
+}))
+.expect("Failed to create device");
+```
+
+</Step>
+
+<Step title="Create buffers">
+
+GPU buffers cannot mix `STORAGE` with `MAP_READ`, so a separate staging buffer handles the CPU readback.
+
+```rust
+// Input: upload data into a read-only STORAGE buffer.
+let input_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+    label: None,
+    contents: bytemuck::cast_slice(&[1.0_f32, 2.0, 3.0, 4.0, 5.0]),
+    usage: wgpu::BufferUsages::STORAGE,
+});
+
+// Output: the shader writes here; we copy from it afterward.
+let output_buf = device.create_buffer(&wgpu::BufferDescriptor {
+    label: None,
+    size: input_buf.size(),
+    usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_SRC,
+    mapped_at_creation: false,
+});
+
+// Staging: CPU-readable destination for the GPU copy.
+let staging_buf = device.create_buffer(&wgpu::BufferDescriptor {
+    label: None,
+    size: input_buf.size(),
+    usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+    mapped_at_creation: false,
+});
+```
+
+</Step>
+
+<Step title="Write the WGSL compute shader">
+
+Create `src/shader.wgsl`. The shader reads from `input`, doubles each element, and writes to `output`.
+
+```wgsl src/shader.wgsl
+@group(0) @binding(0)
+var<storage, read> input: array<f32>;
+
+@group(0) @binding(1)
+var<storage, read_write> output: array<f32>;
+
+@compute @workgroup_size(64)
+fn doubleMe(@builtin(global_invocation_id) global_id: vec3<u32>) {
+    let index = global_id.x;
+    if index >= arrayLength(&input) {
+        return;
+    }
+    output[index] = input[index] * 2.0;
+}
+```
+
+The workgroup size of 64 is a good general default. The bounds check guards against extra invocations when the input length is not a multiple of 64.
+
+</Step>
+
+<Step title="Create a compute pipeline and bind group">
+
+A **bind group layout** declares the resource types the shader expects. A **bind group** binds actual buffers to those slots. A **compute pipeline** ties the shader and layout together.
+
+```rust
+use std::num::NonZeroU64;
+
+let bgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
+    label: None,
+    entries: &[
+        wgpu::BindGroupLayoutEntry {
+            binding: 0,
+            visibility: wgpu::ShaderStages::COMPUTE,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Storage { read_only: true },
+                min_binding_size: Some(NonZeroU64::new(4).unwrap()),
+                has_dynamic_offset: false,
+            },
+            count: None,
+        },
+        wgpu::BindGroupLayoutEntry {
+            binding: 1,
+            visibility: wgpu::ShaderStages::COMPUTE,
+            ty: wgpu::BindingType::Buffer {
+                ty: wgpu::BufferBindingType::Storage { read_only: false },
+                min_binding_size: Some(NonZeroU64::new(4).unwrap()),
+                has_dynamic_offset: false,
+            },
+            count: None,
+        },
+    ],
+});
+
+let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+    label: None,
+    layout: &bgl,
+    entries: &[
+        wgpu::BindGroupEntry { binding: 0, resource: input_buf.as_entire_binding() },
+        wgpu::BindGroupEntry { binding: 1, resource: output_buf.as_entire_binding() },
+    ],
+});
+
+let module = device.create_shader_module(wgpu::include_wgsl!("shader.wgsl"));
+
+let pipeline_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+    label: None,
+    bind_group_layouts: &[Some(&bgl)],
+    immediate_size: 0,
+});
+
+let pipeline = device.create_compute_pipeline(&wgpu::ComputePipelineDescriptor {
+    label: None,
+    layout: Some(&pipeline_layout),
+    module: &module,
+    entry_point: Some("doubleMe"),
+    compilation_options: wgpu::PipelineCompilationOptions::default(),
+    cache: None,
+});
+```
+
+</Step>
+
+<Step title="Encode a compute pass and submit">
+
+A `CommandEncoder` records operations. Nothing reaches the GPU until `queue.submit`.
+
+```rust
+let mut encoder =
+    device.create_command_encoder(&wgpu::CommandEncoderDescriptor { label: None });
+
+{
+    let mut pass = encoder.begin_compute_pass(&wgpu::ComputePassDescriptor {
+        label: None,
+        timestamp_writes: None,
+    });
+    pass.set_pipeline(&pipeline);
+    pass.set_bind_group(0, &bind_group, &[]);
+    // Ceiling-divide input count by workgroup size so every element is covered.
+    let workgroup_count = 5_usize.div_ceil(64) as u32;
+    pass.dispatch_workgroups(workgroup_count, 1, 1);
+}
+
+// Copy GPU output to the CPU-readable staging buffer.
+encoder.copy_buffer_to_buffer(&output_buf, 0, &staging_buf, 0, output_buf.size());
+
+queue.submit([encoder.finish()]);
+```
+
+<Note>
+  The `ComputePass` borrows `encoder` mutably. The inner block drops it before `copy_buffer_to_buffer` is called.
+</Note>
+
+</Step>
+
+<Step title="Read back the results">
+
+Map the staging buffer for CPU access, wait for the GPU to finish, then read the data.
+
+```rust
+let slice = staging_buf.slice(..);
+slice.map_async(wgpu::MapMode::Read, |_| {});
+
+// Block until all submitted GPU work is complete.
+device.poll(wgpu::PollType::wait_indefinitely()).unwrap();
+
+let data = slice.get_mapped_range();
+let result: &[f32] = bytemuck::cast_slice(&data);
+println!("Result: {result:?}");
+// Result: [2.0, 4.0, 6.0, 8.0, 10.0]
+```
+
+<Note>
+  `device.poll(wgpu::PollType::wait_indefinitely())` works on native targets only. On WebGPU you cannot block the thread — rely on the `map_async` callback or an `async` executor instead.
+</Note>
+
+</Step>
+
+</Steps>
 
 ## Next steps
 
-Now that you have your docs running, explore these key features:
-
-<CardGroup cols={2}>
-
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
-
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
-
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
-
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
-
-</CardGroup>
-
-<Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
-</Note>
+<Columns cols={2}>
+  <Card title="Installation" icon="box" href="/installation">
+    Configure feature flags for your target platform.
+  </Card>
+  <Card title="Core Concepts" icon="layer-group" href="/concepts/instance-adapter-device">
+    Understand Instance, Adapter, Device, and Queue in depth.
+  </Card>
+</Columns>
